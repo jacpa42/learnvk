@@ -2,7 +2,9 @@ package learnvk
 
 import "base:runtime"
 import "core:log"
+import "core:math/bits"
 import "core:mem"
+import "core:slice"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
