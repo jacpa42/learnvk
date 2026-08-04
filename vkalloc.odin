@@ -8,22 +8,18 @@ import vk "vendor:vulkan"
 @(private = "file")
 alloc: mem.Allocator
 
-@(private = "file")
-alloc_tracker: map[rawptr]struct {
-	size, alignment: int,
+vk_alloc_tracker: struct {
+	num_alloc, num_free, num_realloc: int,
+	total_alloc, total_free:          int,
+	current_memory_size:              int,
+	allocations:                      map[rawptr]struct {
+		size, alignment: int,
+	},
 }
 
-@(private = "file")
-total_alloc_size :: proc() -> (total: int) {
-	for _, k in alloc_tracker {
-		total += k.size
-	}
-	return
-}
-
-vk_alloc_init :: proc(allocator: mem.Allocator) -> vk.AllocationCallbacks {
-	alloc = allocator
-	alloc_tracker = make(type_of(alloc_tracker), allocator)
+vk_alloc_init :: proc() -> vk.AllocationCallbacks {
+	alloc = context.allocator
+	vk_alloc_tracker.allocations = make(type_of(vk_alloc_tracker.allocations), 128)
 
 	return {
 		pUserData = nil,
@@ -33,6 +29,10 @@ vk_alloc_init :: proc(allocator: mem.Allocator) -> vk.AllocationCallbacks {
 		pfnInternalAllocation = InternalAllocationNotification,
 		pfnInternalFree = InternalFreeNotification,
 	}
+}
+
+vk_alloc_cleanup :: proc() {
+	delete(vk_alloc_tracker.allocations)
 }
 
 @(private = "file")
@@ -49,7 +49,10 @@ Allocation :: proc "system" (
 
 	ptr, err := mem.alloc(size, alignment)
 	if err == .None {
-		alloc_tracker[ptr] = {size, alignment}
+		vk_alloc_tracker.num_alloc += 1
+		vk_alloc_tracker.total_alloc += size
+		vk_alloc_tracker.current_memory_size += size
+		vk_alloc_tracker.allocations[ptr] = {size, alignment}
 	} else {
 		log.errorf("VK :: alloc failed {}", err)
 	}
@@ -70,11 +73,15 @@ Reallocation :: proc "system" (
 		logger    = g_logger,
 	}
 
-	old_size := alloc_tracker[pOriginal].size
+	old_size := vk_alloc_tracker.allocations[pOriginal].size
 
 	ptr, err := mem.resize(pOriginal, old_size, size, alignment)
 	if err == .None {
-		alloc_tracker[ptr] = {size, alignment}
+		vk_alloc_tracker.num_realloc += 1
+		vk_alloc_tracker.total_alloc += size
+		vk_alloc_tracker.total_free += old_size
+		vk_alloc_tracker.current_memory_size += size - old_size
+		vk_alloc_tracker.allocations[ptr] = {size, alignment}
 	} else {
 		log.errorf("VK :: resize failed {}", err)
 	}
@@ -88,6 +95,13 @@ Free :: proc "system" (pUserData: rawptr, pMemory: rawptr) {
 		allocator = alloc,
 		logger    = g_logger,
 	}
+
+	old_size := vk_alloc_tracker.allocations[pMemory].size
+
+	vk_alloc_tracker.num_free += 1
+	vk_alloc_tracker.total_free += old_size
+	vk_alloc_tracker.current_memory_size -= old_size
+	delete_key(&vk_alloc_tracker.allocations, pMemory)
 
 	mem.free(pMemory)
 }

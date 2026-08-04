@@ -41,7 +41,6 @@ Engine :: struct {
 }
 
 main :: proc() {
-
 	//
 	// Setup tracking allocator
 	//
@@ -66,8 +65,6 @@ main :: proc() {
 	engine_init(&engine)
 	defer engine_destroy(&engine)
 
-	fmt.eprintfln("%#v", engine)
-
 	//
 	// Main loop
 	//
@@ -79,9 +76,12 @@ main :: proc() {
 			continue
 		}
 
+		fmt.eprintfln("%#v", vk_alloc_tracker)
+
 		render(&engine)
+
 		free_all(context.temp_allocator)
-		time.sleep(100 * time.Millisecond)
+		time.sleep(5 * time.Second)
 	}
 }
 
@@ -119,7 +119,7 @@ engine_init :: proc(engine: ^Engine) {
 	// Create the Vulkan allocator
 	//
 	{
-		engine.vk_alloc = vk_alloc_init(context.allocator)
+		engine.vk_alloc = vk_alloc_init()
 	}
 
 	//
@@ -589,8 +589,13 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 }
 
 engine_destroy :: proc(engine: ^Engine) {
+	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
 	vk.DestroySurfaceKHR(engine.vk_instance, engine.vk_surface, &engine.vk_alloc)
+	vk.DestroyDevice(engine.vk_device, &engine.vk_alloc)
+	vk.DestroyDebugUtilsMessengerEXT(engine.vk_instance, engine.vk_messenger, &engine.vk_alloc)
 	vk.DestroyInstance(engine.vk_instance, &engine.vk_alloc)
+
+	vk_alloc_cleanup()
 
 	glfw.DestroyWindow(engine.window)
 	glfw.Terminate()
