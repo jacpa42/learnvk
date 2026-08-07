@@ -1,26 +1,33 @@
-EXE_PATH := learnvk
-COMPILE := odin build . -out:$(EXE_PATH) -build-mode:exe
+MAIN_EXE_PATH := bin/learnvk
+COMPILE_MAIN := odin build . -out:$(MAIN_EXE_PATH) -build-mode:exe
+
+SHADER_PROCCESOR_PATH := bin/shader_proccesor
+COMPILE_SHADER_PROCCESOR := odin build shader -out:$(SHADER_PROCCESOR_PATH) -build-mode:exe
 
 COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-param -vet-using-stmt -thread-count:12 -warnings-as-errors -vet-unused-variables
 DEBUG_FLAGS := $(COMMON_FLAGS) -debug
 RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -lto:thin -no-bounds-check
-# RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -disable-assert -lto:thin -no-bounds-check -source-code-locations:none
 
-.PHONY: debug release t r rr
+.PHONY: shad debug release t r rr
 
 debug:
-	@echo "debug compile..."
-	$(COMPILE) $(DEBUG_FLAGS)
+	@echo "debug compile main"
+	$(COMPILE_MAIN) $(DEBUG_FLAGS)
 
 release:
-	@echo "release compile..."
-	$(COMPILE) $(RELEASE_FLAGS)
+	@echo "release compile"
+	$(COMPILE_MAIN) $(RELEASE_FLAGS)
 
 t:
 	odin test . -all-packages
 
 r: debug
-	./$(EXE_PATH)
+	./$(MAIN_EXE_PATH)
 
 rr: release
-	./$(EXE_PATH)
+	./$(MAIN_EXE_PATH)
+
+shad:
+	@echo "debug compile shader processor"
+	$(COMPILE_SHADER_PROCCESOR) $(DEBUG_FLAGS)
+	./$(SHADER_PROCCESOR_PATH) pipeline.odin $$(fd -HI -tf -eslang)

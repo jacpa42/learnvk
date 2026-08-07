@@ -98,15 +98,17 @@ callback_window_minimize :: proc "c" (window: glfw.WindowHandle, iconified: i32)
 
 vulkan_validation_callback :: proc "system" (
 	message_severity: vk.DebugUtilsMessageSeverityFlagsEXT,
-	message_types: vk.DebugUtilsMessageTypeFlagsEXT,
+	message_type: vk.DebugUtilsMessageTypeFlagsEXT,
 	p_callback_data: ^vk.DebugUtilsMessengerCallbackDataEXT,
 	_: rawptr,
 ) -> b32 {
+	if len(p_callback_data.pMessage) == 0 {return false}
+
 	context = runtime.default_context()
 	context.logger = g_logger
-	MESSAGE_FORMAT := "[%v]: %s"
+	MESSAGE_FORMAT := "%v: %s"
 
-	for mt in message_types {
+	for mt in message_type {
 		if .WARNING in message_severity {
 			log.warnf(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
 			return false
