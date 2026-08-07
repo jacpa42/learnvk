@@ -9,9 +9,11 @@ import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-// /home/jacob/Projects/game_programming/learnvk/main.odin:389:7
+// TODO: continue the tutorial
+// /home/jacob/Projects/game_programming/learnvk/main.odin:110:1
+// https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/03_Drawing/02_Rendering_and_presentation.html
 
-VULKAN_API_VERSION :: vk.API_VERSION_1_4
+VULKAN_API_VERSION :: vk.API_VERSION_1_3
 ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
 MAX_PHYSICAL_DEVICE_EXTENSIONS :: 8
 MAX_SWAPCHAIN_IMAGES :: 8
@@ -29,26 +31,39 @@ Engine :: struct {
 	vk_alloc:                               vk.AllocationCallbacks,
 	vk_messenger:                           vk.DebugUtilsMessengerEXT,
 	vk_instance:                            vk.Instance,
+
+	// physical and logical device
 	vk_physical_device:                     vk.PhysicalDevice,
 	vk_physical_device_features:            vk.PhysicalDeviceFeatures,
 	vk_physical_device_properties:          vk.PhysicalDeviceProperties,
 	vk_physical_device_required_extensions: [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
 	vk_device:                              vk.Device,
 	vk_queue:                               vk.Queue,
+	vk_render_queue_index:                  u32,
 	vk_surface:                             vk.SurfaceKHR,
+
+	// swapchain
 	vk_swapchain:                           vk.SwapchainKHR,
 	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
 	vk_swapchain_extent:                    vk.Extent2D,
+	vk_image_index:                         u8,
 	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
 	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
+
+	// pipeline
 	vk_pipeline_cache:                      vk.PipelineCache,
-	vk_pipeline:                            [Pipeline]vk.Pipeline,
+	vk_pipeline:                            Pipeline,
+	vk_render_pipeline:                     [Pipeline]vk.Pipeline,
 	vk_viewport:                            [Pipeline]vk.Viewport,
 	vk_scissor:                             [Pipeline]vk.Rect2D,
 	vk_color_attachment:                    [Pipeline]vk.PipelineColorBlendAttachmentState,
 	vk_pipeline_dynamic_state:              [Pipeline][dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
 	vk_pipeline_shader:                     [Pipeline]vk.ShaderModule,
 	vk_pipeline_layout:                     [Pipeline]vk.PipelineLayout,
+
+	// command buffer
+	vk_cmdpool:                             vk.CommandPool,
+	vk_cmdbuf:                              vk.CommandBuffer,
 }
 
 main :: proc() {
@@ -91,16 +106,101 @@ main :: proc() {
 
 		free_all(context.temp_allocator)
 		time.sleep(100 * time.Millisecond)
-
-		when ODIN_DEBUG {break}
 	}
 }
 
 
+// NOTE: Uses the `engine.vk_image_index` to get the swapchain image to render to
 render :: proc(engine: ^Engine) {
-	// TODO: implement
-}
+	//
+	// Begin recording the command buffer
+	//
+	begin_info := vk.CommandBufferBeginInfo {
+		sType            = .COMMAND_BUFFER_BEGIN_INFO,
+		pInheritanceInfo = nil,
+	}
 
+	vk.BeginCommandBuffer(engine.vk_cmdbuf, &begin_info)
+	defer vk.EndCommandBuffer(engine.vk_cmdbuf)
+
+	//
+	// Make the image optimal to use as a colour attachment (ie render target?)
+	//
+	image_change_layout(
+		cmdbuf = engine.vk_cmdbuf,
+		image = engine.vk_swapchain_images[engine.vk_image_index],
+		old_layout = .UNDEFINED,
+		new_layout = .COLOR_ATTACHMENT_OPTIMAL,
+		src_access = {},
+		dst_access = {.COLOR_ATTACHMENT_WRITE},
+		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
+		dst_stage = {.COLOR_ATTACHMENT_OUTPUT},
+	)
+
+	//
+	// At the end of the frame, convert the image back so we can view
+	//
+	defer image_change_layout(
+		cmdbuf = engine.vk_cmdbuf,
+		image = engine.vk_swapchain_images[engine.vk_image_index],
+		old_layout = .COLOR_ATTACHMENT_OPTIMAL,
+		new_layout = .PRESENT_SRC_KHR,
+		src_access = {.COLOR_ATTACHMENT_WRITE},
+		dst_access = {},
+		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
+		dst_stage = {.BOTTOM_OF_PIPE},
+	)
+
+	//
+	// Define a clear pass on the buffer
+	//
+	attachment_info := vk.RenderingAttachmentInfo {
+		sType = .RENDERING_ATTACHMENT_INFO,
+		imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
+		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+		loadOp = .CLEAR,
+		storeOp = .STORE,
+		clearValue = vk.ClearValue{color = {float32 = {0, 0, 0, 0}}},
+	}
+
+	render_info := vk.RenderingInfo {
+		sType                = .RENDERING_INFO,
+		flags                = {},
+		renderArea           = {{0, 0}, engine.vk_swapchain_extent},
+		layerCount           = 1,
+		viewMask             = 0,
+		colorAttachmentCount = 1,
+		pColorAttachments    = &attachment_info,
+		pDepthAttachment     = nil,
+		pStencilAttachment   = nil,
+	}
+
+	//
+	// Render to the image_view
+	//
+	{
+		vk.CmdBeginRendering(engine.vk_cmdbuf, &render_info)
+		defer vk.CmdEndRendering(engine.vk_cmdbuf)
+
+		//
+		// Run the graphics pipeline
+		//
+		vk.CmdBindPipeline(
+			engine.vk_cmdbuf,
+			.GRAPHICS,
+			engine.vk_render_pipeline[engine.vk_pipeline],
+		)
+		vk.CmdSetViewport(engine.vk_cmdbuf, 0, 1, &engine.vk_viewport[engine.vk_pipeline])
+		vk.CmdSetScissor(engine.vk_cmdbuf, 0, 1, &engine.vk_scissor[engine.vk_pipeline])
+		vk.CmdDraw(
+			engine.vk_cmdbuf,
+			vertexCount = 3,
+			instanceCount = 1,
+			firstVertex = 0,
+			firstInstance = 0,
+		)
+	}
+}
 
 engine_init :: proc(engine: ^Engine) {
 	g_logger = context.logger
@@ -224,6 +324,11 @@ engine_init :: proc(engine: ^Engine) {
 	// Initialize the graphics pipelines
 	//
 	engine_init_graphics_pipeline(engine)
+
+	//
+	// Initialize the command buffer
+	//
+	engine_init_command_buffer(engine)
 }
 
 engine_init_instance :: proc(engine: ^Engine) {
@@ -303,40 +408,42 @@ engine_init_instance :: proc(engine: ^Engine) {
 
 engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	result: vk.Result
-	pipeline_tag := Pipeline.default
+	engine.vk_pipeline = .default
 
 	//
 	// Create the shader module
 	//
 	shader_module_create_info := vk.ShaderModuleCreateInfo {
 		sType    = .SHADER_MODULE_CREATE_INFO,
-		codeSize = slice.size(PIPELINE_BYTE_CODE[pipeline_tag]),
-		pCode    = raw_data(PIPELINE_BYTE_CODE[pipeline_tag]),
+		codeSize = slice.size(PIPELINE_BYTE_CODE[engine.vk_pipeline]),
+		pCode    = raw_data(PIPELINE_BYTE_CODE[engine.vk_pipeline]),
 	}
 
 	result = vk.CreateShaderModule(
 		engine.vk_device,
 		&shader_module_create_info,
 		&engine.vk_alloc,
-		&engine.vk_pipeline_shader[pipeline_tag],
+		&engine.vk_pipeline_shader[engine.vk_pipeline],
 	)
 	ensure(result == .SUCCESS)
 
 	//
 	// For each stage that the shader defines, define the stage creation info
 	//
-	ensure(len(PIPELINE_STAGES[pipeline_tag]) == len(PIPELINE_STAGE_NAMES[pipeline_tag]))
+	ensure(
+		len(PIPELINE_STAGES[engine.vk_pipeline]) == len(PIPELINE_STAGE_NAMES[engine.vk_pipeline]),
+	)
 	shader_stage_create_info: [dynamic; PIPELINE_MAX_STAGES]vk.PipelineShaderStageCreateInfo
 
-	for shader_stage, stage_index in PIPELINE_STAGES[pipeline_tag] {
+	for shader_stage, stage_index in PIPELINE_STAGES[engine.vk_pipeline] {
 		append(
 			&shader_stage_create_info,
 			vk.PipelineShaderStageCreateInfo {
 				sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 				flags = {},
 				stage = {shader_stage},
-				module = engine.vk_pipeline_shader[pipeline_tag],
-				pName = PIPELINE_STAGE_NAMES[pipeline_tag][stage_index],
+				module = engine.vk_pipeline_shader[engine.vk_pipeline],
+				pName = PIPELINE_STAGE_NAMES[engine.vk_pipeline][stage_index],
 				pSpecializationInfo = nil,
 			},
 		)
@@ -346,14 +453,14 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Setup dynamic state for the pipeline. At the moment, just viewport and scissor.
 	//
 	append(
-		&engine.vk_pipeline_dynamic_state[pipeline_tag],
+		&engine.vk_pipeline_dynamic_state[engine.vk_pipeline],
 		..[]vk.DynamicState{.VIEWPORT, .SCISSOR},
 	)
 
 	dynamic_state_create_info := vk.PipelineDynamicStateCreateInfo {
 		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = u32(len(engine.vk_pipeline_dynamic_state[pipeline_tag])),
-		pDynamicStates    = raw_data(engine.vk_pipeline_dynamic_state[pipeline_tag][:]),
+		dynamicStateCount = u32(len(engine.vk_pipeline_dynamic_state[engine.vk_pipeline])),
+		pDynamicStates    = raw_data(engine.vk_pipeline_dynamic_state[engine.vk_pipeline][:]),
 	}
 
 	//
@@ -386,7 +493,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	// Do the viewport creation
 	//
-	engine.vk_viewport[pipeline_tag] = vk.Viewport {
+	engine.vk_viewport[engine.vk_pipeline] = vk.Viewport {
 		x        = 0,
 		y        = 0,
 		width    = f32(engine.vk_swapchain_extent.width),
@@ -395,7 +502,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		maxDepth = 1,
 	}
 
-	engine.vk_scissor[pipeline_tag] = vk.Rect2D {
+	engine.vk_scissor[engine.vk_pipeline] = vk.Rect2D {
 		offset = {},
 		extent = engine.vk_swapchain_extent,
 	}
@@ -440,7 +547,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 
 	// Only one color attachment for now
-	engine.vk_color_attachment[pipeline_tag] = {
+	engine.vk_color_attachment[engine.vk_pipeline] = {
 		blendEnable         = true,
 		srcColorBlendFactor = .SRC_ALPHA,
 		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
@@ -457,7 +564,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		logicOpEnable   = false,
 		logicOp         = .COPY,
 		attachmentCount = 1,
-		pAttachments    = &engine.vk_color_attachment[pipeline_tag],
+		pAttachments    = &engine.vk_color_attachment[engine.vk_pipeline],
 	}
 
 	//
@@ -482,10 +589,10 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		engine.vk_device,
 		&pipeline_layout_create_info,
 		&engine.vk_alloc,
-		&engine.vk_pipeline_layout[pipeline_tag],
+		&engine.vk_pipeline_layout[engine.vk_pipeline],
 	)
 	ensure(result == .SUCCESS)
-	ensure(engine.vk_pipeline_layout[pipeline_tag] != {})
+	ensure(engine.vk_pipeline_layout[engine.vk_pipeline] != {})
 
 	//
 	// Define the rendering pipeline
@@ -528,7 +635,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 
 		// Actually a lot of flags here
 		flags               = {},
-		stageCount          = u32(len(PIPELINE_STAGES[pipeline_tag])),
+		stageCount          = u32(len(PIPELINE_STAGES[engine.vk_pipeline])),
 		pStages             = &shader_stage_create_info[0],
 		pVertexInputState   = &vertex_create_info,
 		pInputAssemblyState = &input_assembly_create_info,
@@ -539,7 +646,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		pDepthStencilState  = nil,
 		pColorBlendState    = &color_blend_create_info,
 		pDynamicState       = &dynamic_state_create_info,
-		layout              = engine.vk_pipeline_layout[pipeline_tag],
+		layout              = engine.vk_pipeline_layout[engine.vk_pipeline],
 
 		// NOTE: Used to derive a pipeline from another with
 		// PipelineCreateFlag.DERIVATIVE. Leaving nil at the moment
@@ -557,7 +664,47 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		1,
 		&pipeline_create_info,
 		&engine.vk_alloc,
-		&engine.vk_pipeline[pipeline_tag],
+		&engine.vk_render_pipeline[engine.vk_pipeline],
+	)
+	ensure(result == .SUCCESS)
+}
+
+
+engine_init_command_buffer :: proc(engine: ^Engine) {
+	result: vk.Result
+	//
+	// First create the command pool
+	//
+	cmd_pool_create_info := vk.CommandPoolCreateInfo {
+		sType            = .COMMAND_POOL_CREATE_INFO,
+		flags            = {.RESET_COMMAND_BUFFER},
+		queueFamilyIndex = engine.vk_render_queue_index,
+	}
+
+
+	result = vk.CreateCommandPool(
+		engine.vk_device,
+		&cmd_pool_create_info,
+		&engine.vk_alloc,
+		&engine.vk_cmdpool,
+	)
+	ensure(result == .SUCCESS)
+
+
+	//
+	// Allocate the command buffers
+	//
+	cmdbuf_alloc_create_info := vk.CommandBufferAllocateInfo {
+		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+		commandPool        = engine.vk_cmdpool,
+		level              = .PRIMARY,
+		commandBufferCount = 1,
+	}
+
+	result = vk.AllocateCommandBuffers(
+		engine.vk_device,
+		&cmdbuf_alloc_create_info,
+		&engine.vk_cmdbuf,
 	)
 	ensure(result == .SUCCESS)
 }
@@ -596,10 +743,16 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 	)
 	vk.GetPhysicalDeviceFeatures(engine.vk_physical_device, &engine.vk_physical_device_features)
 
+	//
+	// Define the features we need for our application to run
+	//
 	exts := &engine.vk_physical_device_required_extensions
 	append(exts, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
 	append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
 	append(exts, vk.KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME)
+	append(exts, vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
+	append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
+
 
 	ensure(
 		device_meets_requirements(
@@ -631,7 +784,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	// Grab the first queue with graphics capabilities
 	//
-	render_queue_index: u32 = bits.U32_MAX
+	engine.vk_render_queue_index = bits.U32_MAX
 	for properties, index in queue_properties {
 
 		has_graphics := .GRAPHICS in properties.queueFlags
@@ -645,19 +798,40 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 		)
 
 		if has_graphics && has_presentation {
-			render_queue_index = u32(index)
+			engine.vk_render_queue_index = u32(index)
 			break
 		}
 	}
 
-	ensure(render_queue_index != bits.U32_MAX, "We need a queue with graphics capabilities")
+	ensure(
+		engine.vk_render_queue_index != bits.U32_MAX,
+		"We need a queue with graphics capabilities",
+	)
 
 	queue_priority: f32 = 0.5 // Doesn't really matter for 1 queue?
 	queue_create_info := vk.DeviceQueueCreateInfo {
 		sType            = .DEVICE_QUEUE_CREATE_INFO,
-		queueFamilyIndex = render_queue_index,
+		queueFamilyIndex = engine.vk_render_queue_index,
 		queueCount       = 1,
 		pQueuePriorities = &queue_priority,
+	}
+
+	//
+	// Enable dynamic local read
+	//
+	render_local_read := vk.PhysicalDeviceDynamicRenderingLocalReadFeatures {
+		sType                     = .PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES,
+		pNext                     = nil,
+		dynamicRenderingLocalRead = true,
+	}
+
+	//
+	// Enable Synchronization 2
+	//
+	sync_two := vk.PhysicalDeviceSynchronization2Features {
+		sType            = .PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+		pNext            = &render_local_read,
+		synchronization2 = true,
 	}
 
 	//
@@ -665,6 +839,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	dynamic_rendering := vk.PhysicalDeviceDynamicRenderingFeatures {
 		sType            = .PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+		pNext            = &sync_two,
 		dynamicRendering = true,
 	}
 
@@ -704,7 +879,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	// Get the render/graphics queue
 	//
-	vk.GetDeviceQueue(engine.vk_device, render_queue_index, 0, &engine.vk_queue)
+	vk.GetDeviceQueue(engine.vk_device, engine.vk_render_queue_index, 0, &engine.vk_queue)
 	ensure(engine.vk_queue != nil)
 }
 
@@ -935,10 +1110,15 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 }
 
 engine_destroy :: proc(engine: ^Engine) {
+
+	// cmd buffer is destroyed when we destroy the pool (I think)
+	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, &engine.vk_alloc)
+	engine.vk_cmdbuf = {}
+
 	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, &engine.vk_alloc)
 	for p in Pipeline {
 		vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout[p], &engine.vk_alloc)
-		vk.DestroyPipeline(engine.vk_device, engine.vk_pipeline[p], &engine.vk_alloc)
+		vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline[p], &engine.vk_alloc)
 	}
 	for shader in engine.vk_pipeline_shader {
 		vk.DestroyShaderModule(engine.vk_device, shader, &engine.vk_alloc)

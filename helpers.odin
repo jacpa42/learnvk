@@ -6,6 +6,57 @@ import "core:mem"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+//
+// Used for converting the memory format of an image to be more suitable for
+// different tasks such as rendering and displaying to the screen.
+//
+image_change_layout :: proc(
+	cmdbuf: vk.CommandBuffer,
+	image: vk.Image,
+	old_layout, new_layout: vk.ImageLayout,
+	src_access, dst_access: vk.AccessFlags2,
+	src_stage, dst_stage: vk.PipelineStageFlags2,
+) {
+	image_memory_barrier := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcAccessMask = src_access,
+		srcStageMask = src_stage,
+		dstAccessMask = dst_access,
+		dstStageMask = dst_stage,
+		oldLayout = old_layout,
+		newLayout = new_layout,
+		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		image = image,
+		subresourceRange = {
+			aspectMask = {.COLOR},
+			baseMipLevel = 0,
+			levelCount = 1,
+			baseArrayLayer = 0,
+			layerCount = 1,
+		},
+	}
+
+	dependancy_info := vk.DependencyInfo {
+		sType                    = .DEPENDENCY_INFO,
+		dependencyFlags          = {},
+
+		// mem barrier
+		memoryBarrierCount       = 0,
+		pMemoryBarriers          = nil,
+
+		// buf mem barrier
+		bufferMemoryBarrierCount = 0,
+		pBufferMemoryBarriers    = nil,
+
+		// image mem barrier
+		imageMemoryBarrierCount  = 1,
+		pImageMemoryBarriers     = &image_memory_barrier,
+	}
+
+	vk.CmdPipelineBarrier2(cmdbuf, &dependancy_info)
+}
+
 device_meets_requirements :: proc(
 	gpu: vk.PhysicalDevice,
 	properties: vk.PhysicalDeviceProperties,
