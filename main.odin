@@ -1,38 +1,43 @@
 package learnvk
 
 import "base:runtime"
+import "core:debug/trace"
+import "core:fmt"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
 import "core:slice"
-import "core:time"
+import "core:thread"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-// TODO: continue the tutorial
-// /home/jacob/Projects/game_programming/learnvk/main.odin:110:1
-// https://docs.vulkan.org/tutorial/latest/03_Drawing_a_triangle/03_Drawing/02_Rendering_and_presentation.html
-
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
 ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
-MAX_PHYSICAL_DEVICE_EXTENSIONS :: 8
+MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
 MAX_SWAPCHAIN_IMAGES :: 8
+FRAMES_IN_FLIGHT :: 2
 MAX_DYNAMIC_STATE :: 90
 APP_NAME: cstring = "learnvk"
 
 g_logger: runtime.Logger
+g_trace: trace.Context
 
 Engine :: struct {
 	// Windowing stuff
 	window:                                 glfw.WindowHandle,
 	stop_rendering:                         bool,
+	models:                                 [ModelTag]Model,
 
+	//
 	// Vulkan stuff
+	//
 	vk_alloc:                               vk.AllocationCallbacks,
 	vk_messenger:                           vk.DebugUtilsMessengerEXT,
 	vk_instance:                            vk.Instance,
 
-	// physical and logical device
+	//
+	// Physical and Logical device
+	//
 	vk_physical_device:                     vk.PhysicalDevice,
 	vk_physical_device_features:            vk.PhysicalDeviceFeatures,
 	vk_physical_device_properties:          vk.PhysicalDeviceProperties,
@@ -42,15 +47,20 @@ Engine :: struct {
 	vk_render_queue_index:                  u32,
 	vk_surface:                             vk.SurfaceKHR,
 
-	// swapchain
+	//
+	// Swapchain
+	//
 	vk_swapchain:                           vk.SwapchainKHR,
 	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
 	vk_swapchain_extent:                    vk.Extent2D,
-	vk_image_index:                         u8,
+	vk_image_index:                         u32,
+	vk_swapchain_semas:                     [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
 	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
 	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
 
-	// pipeline
+	//
+	// Pipeline
+	//
 	vk_pipeline_cache:                      vk.PipelineCache,
 	vk_pipeline:                            Pipeline,
 	vk_render_pipeline:                     [Pipeline]vk.Pipeline,
@@ -61,9 +71,14 @@ Engine :: struct {
 	vk_pipeline_shader:                     [Pipeline]vk.ShaderModule,
 	vk_pipeline_layout:                     [Pipeline]vk.PipelineLayout,
 
-	// command buffer
+	//
+	// Command buffer
+	//
 	vk_cmdpool:                             vk.CommandPool,
-	vk_cmdbuf:                              vk.CommandBuffer,
+	vk_frame_index:                         u32,
+	vk_cmdbufs:                             [FRAMES_IN_FLIGHT]vk.CommandBuffer,
+	vk_present_complete_semas:              [FRAMES_IN_FLIGHT]vk.Semaphore,
+	vk_draw_fences:                         [FRAMES_IN_FLIGHT]vk.Fence,
 }
 
 main :: proc() {
@@ -85,11 +100,38 @@ main :: proc() {
 	}
 
 	//
+	// Setup stack trace
+	//
+	when ODIN_DEBUG {
+		context.assertion_failure_proc = assertion_failure_proc
+		assert(trace.init(&g_trace))
+	}
+
+	//
 	// Init engine
 	//
 	engine: Engine
+
+	for &model, tag in engine.models {model.tag = tag}
+
+	load_model_thread := thread.create_and_start_with_poly_data2(
+		arg1 = (([^]Model)(&engine.models))[:NUM_MODELS],
+		arg2 = (^bool)(nil),
+		fn = load_all_models,
+		init_context = context,
+	)
+
 	engine_init(&engine)
 	defer engine_destroy(&engine)
+
+	thread.destroy(load_model_thread)
+
+	for model, tag in engine.models {
+		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
+		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
+		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
+		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
+	}
 
 	//
 	// Main loop
@@ -102,104 +144,207 @@ main :: proc() {
 			continue
 		}
 
-		render(&engine)
+		frame(&engine)
 
 		free_all(context.temp_allocator)
-		time.sleep(100 * time.Millisecond)
 	}
 }
 
+frame :: proc(engine: ^Engine) {
+	result: vk.Result
 
-// NOTE: Uses the `engine.vk_image_index` to get the swapchain image to render to
-render :: proc(engine: ^Engine) {
-	//
-	// Begin recording the command buffer
-	//
-	begin_info := vk.CommandBufferBeginInfo {
-		sType            = .COMMAND_BUFFER_BEGIN_INFO,
-		pInheritanceInfo = nil,
-	}
-
-	vk.BeginCommandBuffer(engine.vk_cmdbuf, &begin_info)
-	defer vk.EndCommandBuffer(engine.vk_cmdbuf)
+	defer engine.vk_frame_index = (engine.vk_frame_index + 1) % FRAMES_IN_FLIGHT
 
 	//
-	// Make the image optimal to use as a colour attachment (ie render target?)
+	// Before we begin our frame, we need to wait and reset draw fence
 	//
-	image_change_layout(
-		cmdbuf = engine.vk_cmdbuf,
-		image = engine.vk_swapchain_images[engine.vk_image_index],
-		old_layout = .UNDEFINED,
-		new_layout = .COLOR_ATTACHMENT_OPTIMAL,
-		src_access = {},
-		dst_access = {.COLOR_ATTACHMENT_WRITE},
-		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
-		dst_stage = {.COLOR_ATTACHMENT_OUTPUT},
+	result = vk.WaitForFences(
+		engine.vk_device,
+		1,
+		&engine.vk_draw_fences[engine.vk_frame_index],
+		true,
+		bits.U64_MAX,
 	)
+	ensure(result == .SUCCESS)
+
+	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fences[engine.vk_frame_index])
+	ensure(result == .SUCCESS)
 
 	//
-	// At the end of the frame, convert the image back so we can view
+	// Get the first image in the swapchain for the render loop
 	//
-	defer image_change_layout(
-		cmdbuf = engine.vk_cmdbuf,
-		image = engine.vk_swapchain_images[engine.vk_image_index],
-		old_layout = .COLOR_ATTACHMENT_OPTIMAL,
-		new_layout = .PRESENT_SRC_KHR,
-		src_access = {.COLOR_ATTACHMENT_WRITE},
-		dst_access = {},
-		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
-		dst_stage = {.BOTTOM_OF_PIPE},
+	result = vk.AcquireNextImageKHR(
+		device = engine.vk_device,
+		swapchain = engine.vk_swapchain,
+		timeout = bits.U64_MAX,
+		semaphore = engine.vk_present_complete_semas[engine.vk_frame_index],
+		fence = {},
+		pImageIndex = &engine.vk_image_index,
 	)
+	ensure(result == .SUCCESS)
+	ensure(int(engine.vk_image_index) < len(engine.vk_swapchain_images))
 
 	//
-	// Define a clear pass on the buffer
-	//
-	attachment_info := vk.RenderingAttachmentInfo {
-		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
-		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		loadOp = .CLEAR,
-		storeOp = .STORE,
-		clearValue = vk.ClearValue{color = {float32 = {0, 0, 0, 0}}},
-	}
-
-	render_info := vk.RenderingInfo {
-		sType                = .RENDERING_INFO,
-		flags                = {},
-		renderArea           = {{0, 0}, engine.vk_swapchain_extent},
-		layerCount           = 1,
-		viewMask             = 0,
-		colorAttachmentCount = 1,
-		pColorAttachments    = &attachment_info,
-		pDepthAttachment     = nil,
-		pStencilAttachment   = nil,
-	}
-
-	//
-	// Render to the image_view
+	// Fill the command buffer
 	//
 	{
-		vk.CmdBeginRendering(engine.vk_cmdbuf, &render_info)
-		defer vk.CmdEndRendering(engine.vk_cmdbuf)
+		//
+		// Begin recording the command buffer
+		//
+		begin_info := vk.CommandBufferBeginInfo {
+			sType            = .COMMAND_BUFFER_BEGIN_INFO,
+			pInheritanceInfo = nil,
+		}
+
+		vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
+		defer vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
 
 		//
-		// Run the graphics pipeline
+		// Make the image optimal to use as a colour attachment (ie render target?)
 		//
-		vk.CmdBindPipeline(
-			engine.vk_cmdbuf,
-			.GRAPHICS,
-			engine.vk_render_pipeline[engine.vk_pipeline],
+		image_change_layout(
+			cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
+			image = engine.vk_swapchain_images[engine.vk_image_index],
+			old_layout = .UNDEFINED,
+			new_layout = .COLOR_ATTACHMENT_OPTIMAL,
+			src_access = {},
+			dst_access = {.COLOR_ATTACHMENT_WRITE},
+			src_stage = {.COLOR_ATTACHMENT_OUTPUT},
+			dst_stage = {.COLOR_ATTACHMENT_OUTPUT},
 		)
-		vk.CmdSetViewport(engine.vk_cmdbuf, 0, 1, &engine.vk_viewport[engine.vk_pipeline])
-		vk.CmdSetScissor(engine.vk_cmdbuf, 0, 1, &engine.vk_scissor[engine.vk_pipeline])
-		vk.CmdDraw(
-			engine.vk_cmdbuf,
-			vertexCount = 3,
-			instanceCount = 1,
-			firstVertex = 0,
-			firstInstance = 0,
+
+		//
+		// At the end of the frame, convert the image back so we can present it
+		//
+		defer image_change_layout(
+			cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
+			image = engine.vk_swapchain_images[engine.vk_image_index],
+			old_layout = .COLOR_ATTACHMENT_OPTIMAL,
+			new_layout = .PRESENT_SRC_KHR,
+			src_access = {.COLOR_ATTACHMENT_WRITE},
+			dst_access = {},
+			src_stage = {.COLOR_ATTACHMENT_OUTPUT},
+			dst_stage = {.BOTTOM_OF_PIPE},
 		)
+
+		//
+		// Define a clear pass on the current swapchain image
+		//
+		attachment_info := vk.RenderingAttachmentInfo {
+			sType = .RENDERING_ATTACHMENT_INFO,
+			imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
+			imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+			loadOp = .CLEAR,
+			storeOp = .STORE,
+			clearValue = vk.ClearValue{color = {uint32 = {0x74, 0x16, 0x18, 0xff}}},
+		}
+
+		render_info := vk.RenderingInfo {
+			sType                = .RENDERING_INFO,
+			flags                = {},
+			renderArea           = {{0, 0}, engine.vk_swapchain_extent},
+			layerCount           = 1,
+			viewMask             = 0,
+			colorAttachmentCount = 1,
+			pColorAttachments    = &attachment_info,
+			pDepthAttachment     = nil,
+			pStencilAttachment   = nil,
+		}
+
+		//
+		// Render to the image_view
+		//
+		{
+			vk.CmdBeginRendering(engine.vk_cmdbufs[engine.vk_frame_index], &render_info)
+			defer vk.CmdEndRendering(engine.vk_cmdbufs[engine.vk_frame_index])
+
+			//
+			// Run the graphics pipeline
+			//
+			vk.CmdBindPipeline(
+				engine.vk_cmdbufs[engine.vk_frame_index],
+				.GRAPHICS,
+				engine.vk_render_pipeline[engine.vk_pipeline],
+			)
+			vk.CmdSetViewport(
+				engine.vk_cmdbufs[engine.vk_frame_index],
+				0,
+				1,
+				&engine.vk_viewport[engine.vk_pipeline],
+			)
+			vk.CmdSetScissor(
+				engine.vk_cmdbufs[engine.vk_frame_index],
+				0,
+				1,
+				&engine.vk_scissor[engine.vk_pipeline],
+			)
+			vk.CmdDraw(
+				engine.vk_cmdbufs[engine.vk_frame_index],
+				vertexCount = 3,
+				instanceCount = 1,
+				firstVertex = 0,
+				firstInstance = 0,
+			)
+		}
 	}
+
+
+	//
+	// Submit the command buffer
+	//
+	submit_info := vk.SubmitInfo {
+		sType                = .SUBMIT_INFO,
+
+		//
+		// Waits for these mutexs to be unlocked before we begin executing the
+		// command buffer.
+		//
+		waitSemaphoreCount   = 1,
+		pWaitSemaphores      = &engine.vk_present_complete_semas[engine.vk_frame_index],
+		pWaitDstStageMask    = &vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+
+		//
+		// The command buffers to execute
+		//
+		commandBufferCount   = 1,
+		pCommandBuffers      = &engine.vk_cmdbufs[engine.vk_frame_index],
+
+		//
+		// These mutexs are locked for the duration of the submission/execution
+		// of the command buffers.
+		//
+		signalSemaphoreCount = 1,
+		pSignalSemaphores    = &engine.vk_swapchain_semas[engine.vk_image_index],
+	}
+
+	result = vk.QueueSubmit(
+		engine.vk_queue,
+		1,
+		&submit_info,
+		engine.vk_draw_fences[engine.vk_frame_index],
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Present the frame on the screen
+	//
+	present_info := vk.PresentInfoKHR {
+		sType              = .PRESENT_INFO_KHR,
+		swapchainCount     = 1,
+		pSwapchains        = &engine.vk_swapchain,
+		pImageIndices      = &engine.vk_image_index,
+		pResults           = nil,
+
+		//
+		// Wait on the render finished mutex which is signalled once the command
+		// buffer finishes execution.
+		//
+		waitSemaphoreCount = 1,
+		pWaitSemaphores    = &engine.vk_swapchain_semas[engine.vk_image_index],
+	}
+
+	result = vk.QueuePresentKHR(engine.vk_queue, &present_info)
+	ensure(result == .SUCCESS)
 }
 
 engine_init :: proc(engine: ^Engine) {
@@ -255,7 +400,7 @@ engine_init :: proc(engine: ^Engine) {
 			&engine.vk_surface,
 		)
 		ensure(result == .SUCCESS)
-		ensure(engine.vk_surface != 0)
+		ensure(engine.vk_surface != {})
 	}
 
 	//
@@ -698,15 +843,49 @@ engine_init_command_buffer :: proc(engine: ^Engine) {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = engine.vk_cmdpool,
 		level              = .PRIMARY,
-		commandBufferCount = 1,
+		commandBufferCount = u32(len(engine.vk_cmdbufs)),
 	}
 
 	result = vk.AllocateCommandBuffers(
 		engine.vk_device,
 		&cmdbuf_alloc_create_info,
-		&engine.vk_cmdbuf,
+		raw_data(engine.vk_cmdbufs[:]),
 	)
 	ensure(result == .SUCCESS)
+
+	//
+	// Create the semaphores and fences for the command buffer
+	//
+	{
+		sema_create_info := vk.SemaphoreCreateInfo {
+			sType = .SEMAPHORE_CREATE_INFO,
+		}
+
+		//
+		// Create the semaphores for the frame presentation completion
+		//
+		for &sema in engine.vk_present_complete_semas {
+			result = vk.CreateSemaphore(
+				engine.vk_device,
+				&sema_create_info,
+				&engine.vk_alloc,
+				&sema,
+			)
+			ensure(result == .SUCCESS)
+		}
+
+		//
+		// Create the fences
+		//
+		fence_create_info := vk.FenceCreateInfo {
+			sType = .FENCE_CREATE_INFO,
+			flags = {.SIGNALED},
+		}
+		for &fence in engine.vk_draw_fences {
+			result = vk.CreateFence(engine.vk_device, &fence_create_info, &engine.vk_alloc, &fence)
+			ensure(result == .SUCCESS)
+		}
+	}
 }
 
 engine_init_physical_device :: proc(engine: ^Engine) {
@@ -971,6 +1150,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 
 		if slice.contains(present_modes, vk.PresentModeKHR.MAILBOX) {
 			present_mode = .MAILBOX
+			present_mode = .FIFO
 		} else {
 			present_mode = .FIFO
 		}
@@ -996,7 +1176,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		pre_transform = capabilities.currentTransform
 
 		//
-		// Set the min image count
+		// Set the minimum number of images we want to create for the swapchain.
 		//
 
 		// Zero is a special value meaning there is no maximum here
@@ -1042,7 +1222,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		// pQueueFamilyIndices:   [^]u32,
 		presentMode      = present_mode,
 		clipped          = true,
-		oldSwapchain     = 0, // TODO: Implement swap chain recreation
+		oldSwapchain     = {}, // TODO: Implement swap chain recreation
 		imageUsage       = {.COLOR_ATTACHMENT},
 		preTransform     = pre_transform,
 		compositeAlpha   = {.OPAQUE},
@@ -1055,7 +1235,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		&engine.vk_swapchain,
 	)
 	ensure(result == .SUCCESS)
-	ensure(engine.vk_swapchain != 0)
+	ensure(engine.vk_swapchain != {})
 
 	//
 	// Retrieve swapchain images
@@ -1076,6 +1256,18 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		ensure(result == .SUCCESS)
 	}
 
+	//
+	// Create the Semaphores for rendering to the swapchain
+	//
+	resize(&engine.vk_swapchain_semas, len(engine.vk_swapchain_images))
+
+	for &sema in engine.vk_swapchain_semas {
+		create_info := vk.SemaphoreCreateInfo {
+			sType = .SEMAPHORE_CREATE_INFO,
+		}
+		result = vk.CreateSemaphore(engine.vk_device, &create_info, &engine.vk_alloc, &sema)
+		ensure(result == .SUCCESS)
+	}
 
 	//
 	// Create the image views for the swap chain
@@ -1110,10 +1302,28 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 }
 
 engine_destroy :: proc(engine: ^Engine) {
+	vk.DeviceWaitIdle(engine.vk_device)
+
+	for &model in engine.models {
+		model_destroy(&model)
+	}
+
+	for sema in engine.vk_swapchain_semas {
+		vk.DestroySemaphore(engine.vk_device, sema, &engine.vk_alloc)
+	}
+
+	for sema in engine.vk_present_complete_semas {
+		vk.DestroySemaphore(engine.vk_device, sema, &engine.vk_alloc)
+	}
+
+	for fence in engine.vk_draw_fences {
+		vk.DestroyFence(engine.vk_device, fence, &engine.vk_alloc)
+	}
+
 
 	// cmd buffer is destroyed when we destroy the pool (I think)
 	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, &engine.vk_alloc)
-	engine.vk_cmdbuf = {}
+	engine.vk_cmdbufs = {}
 
 	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, &engine.vk_alloc)
 	for p in Pipeline {

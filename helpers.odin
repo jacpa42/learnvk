@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:debug/trace"
 import "core:log"
 import "core:mem"
 import "vendor:glfw"
@@ -167,7 +168,8 @@ vulkan_validation_callback :: proc "system" (
 
 		if .ERROR in message_severity {
 			log.errorf(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
-			runtime.debug_trap()
+			return false
+			// unreachable()
 		}
 
 		log.infof(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
@@ -175,6 +177,43 @@ vulkan_validation_callback :: proc "system" (
 		return false
 	}
 
-	unreachable()
+	return false
+}
+
+assertion_failure_proc :: proc(prefix, message: string, loc := #caller_location) -> ! {
+	runtime.print_caller_location(loc)
+	runtime.print_string(" ")
+	runtime.print_string(prefix)
+	if len(message) > 0 {
+		runtime.print_string(": ")
+		runtime.print_string(message)
+	}
+	runtime.print_byte('\n')
+
+	ctx := &g_trace
+	if !trace.in_resolve(ctx) {
+		buf: [64]trace.Frame
+		runtime.print_string("Debug Trace:\n")
+		frames := trace.frames(ctx, 1, buf[:])
+		for f, i in frames {
+			fl := trace.resolve(ctx, f, context.temp_allocator)
+			if fl.loc.file_path == "" && fl.loc.line == 0 {
+				continue
+			}
+			runtime.print_caller_location(fl.loc)
+			runtime.print_string(" - frame ")
+			runtime.print_int(i)
+			runtime.print_byte('\n')
+		}
+	}
+	runtime.trap()
+}
+
+make_or_clear :: proc(item: ^[dynamic]$T) {
+	if item^ == nil {
+		item^ = make([dynamic]T)
+	} else {
+		clear(item)
+	}
 }
 
