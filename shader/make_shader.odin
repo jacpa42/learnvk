@@ -30,6 +30,10 @@ main :: proc() {
 		}
 	}
 
+	//
+	// Parse cmdline args and spawn compilation tasks
+	//
+
 	if len(os.args) < 3 {
 		fmt.eprintfln("Usage \"{} output_file.odin ..shaders_to_compile\"", os.args[0])
 		return
@@ -39,17 +43,23 @@ main :: proc() {
 	shader_paths := os.args[2:]
 
 	threads := make([]^thread.Thread, len(shader_paths))
-	defer delete(threads)
-
-	reflect_data := make([]SlangReflectData, len(shader_paths))
-	defer {
-		for &rd in reflect_data {slang_reflect_destroy(&rd)}
-		delete(reflect_data)
-	}
-
+	reflect_arenas := make([]mem.Arena, len(shader_paths))
+	reflect_data_objects := make([]SlangReflectData, len(shader_paths))
 	compiled_byte_code := make([][]u32, len(shader_paths))
+
 	defer {
-		for code in compiled_byte_code {delete(code)}
+		delete(threads)
+
+		for &arena in reflect_arenas {
+			delete(arena.data)
+		}
+
+		delete(reflect_arenas)
+		delete(reflect_data_objects)
+
+		for code in compiled_byte_code {
+			delete(code)
+		}
 		delete(compiled_byte_code)
 	}
 
@@ -58,7 +68,8 @@ main :: proc() {
 			CompileTaskData {
 				shader_path = path,
 				output = &compiled_byte_code[i],
-				reflect_data = &reflect_data[i],
+				reflect_data = &reflect_data_objects[i],
+				reflect_arena = &reflect_arenas[i],
 			},
 			compile_shader_to_spirv,
 			context,
@@ -66,19 +77,18 @@ main :: proc() {
 	}
 
 	output_file_data := make([dynamic]byte)
-	defer delete(output_file_data)
-
 	defer {
 		oserr := os.write_entire_file_from_bytes(output_file_path, output_file_data[:])
 		if oserr != nil {
 			fmt.eprintfln("Failed to construct output file: {}", oserr)
 		}
+
+		delete(output_file_data)
 	}
 
 	append(&output_file_data, "package learnvk\n\n")
-	append(&output_file_data, "import vk \"vendor:vulkan\"\n")
-	append(&output_file_data, "//\n// This file is machine generated :)\n//\n")
-	append(&output_file_data, "\n")
+	append(&output_file_data, "import vk \"vendor:vulkan\"\n\n")
+	append(&output_file_data, "//\n// This file is machine generated :)\n//\n\n")
 
 	//
 	// Create the shader enum
@@ -112,11 +122,11 @@ main :: proc() {
 	for t in threads {thread.destroy(t)}
 
 	//
-	// Write the max number of shader stages any shader uses so
+	// Write the max number of shader stages any shader uses
 	//
 	{
 		max_stages: int
-		for sr in reflect_data {
+		for sr in reflect_data_objects {
 			max_stages = max(max_stages, len(sr.entryPoints))
 		}
 
@@ -125,11 +135,21 @@ main :: proc() {
 	}
 
 	//
+	// For each input to the vertex shader, create the
+	// vk.VertexInputBindingDescription and vk.VertexInputAttributeDescription
+	// for them.
+	//
+	// Also define the structs which are in the shader in the odin file for
+	// convenience.
+	//
+	append_vertex_input_description(&output_file_data, shader_paths, reflect_data_objects)
+
+	//
 	// Make an array of all the entrypoints defined in the same order as the
 	// entry point layout name below.
 	//
 	append(&output_file_data, "PIPELINE_STAGES := [Pipeline][]vk.ShaderStageFlag{\n")
-	for sr, i in reflect_data {
+	for sr, i in reflect_data_objects {
 		assert(len(sr.entryPoints) > 0)
 
 		name := make_shader_enum_variant(shader_paths[i])
@@ -157,7 +177,7 @@ main :: proc() {
 		"// The vk.ShaderStageFlag for each entry point is defined in the array above\n",
 	)
 	append(&output_file_data, "PIPELINE_STAGE_NAMES := [Pipeline][]cstring{\n")
-	for sr, i in reflect_data {
+	for sr, i in reflect_data_objects {
 		assert(len(sr.entryPoints) > 0)
 
 		name := make_shader_enum_variant(shader_paths[i])
@@ -206,11 +226,12 @@ main :: proc() {
 
 CompileTaskData :: struct #all_or_none {
 	// input
-	shader_path:  string,
+	shader_path:   string,
 
 	// output
-	output:       ^[]u32,
-	reflect_data: ^SlangReflectData,
+	output:        ^[]u32,
+	reflect_arena: ^mem.Arena,
+	reflect_data:  ^SlangReflectData,
 }
 
 compile_shader_to_spirv :: proc(data: CompileTaskData) {
@@ -269,8 +290,8 @@ compile_shader_to_spirv :: proc(data: CompileTaskData) {
 	len := len(stdout) / size_of(u32)
 	data.output^ = ptr[:len]
 
-	data.reflect_data^ = slang_reflect_unmarshal(json_reflect_path)
-	os.remove(json_reflect_path)
+	data.reflect_arena^, data.reflect_data^ = slang_reflect_unmarshal(json_reflect_path)
+	// os.remove(json_reflect_path)
 
 	return
 }

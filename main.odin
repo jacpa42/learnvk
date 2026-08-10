@@ -26,6 +26,7 @@ Engine :: struct {
 	// Windowing stuff
 	window:                                 glfw.WindowHandle,
 	stop_rendering:                         bool,
+	framebuffer_resized:                    bool,
 	models:                                 [ModelTag]Model,
 
 	//
@@ -54,7 +55,6 @@ Engine :: struct {
 	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
 	vk_swapchain_extent:                    vk.Extent2D,
 	vk_image_index:                         u32,
-	vk_swapchain_semas:                     [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
 	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
 	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
 
@@ -77,6 +77,7 @@ Engine :: struct {
 	vk_cmdpool:                             vk.CommandPool,
 	vk_frame_index:                         u32,
 	vk_cmdbufs:                             [FRAMES_IN_FLIGHT]vk.CommandBuffer,
+	vk_swapchain_semas:                     [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
 	vk_present_complete_semas:              [FRAMES_IN_FLIGHT]vk.Semaphore,
 	vk_draw_fences:                         [FRAMES_IN_FLIGHT]vk.Fence,
 }
@@ -124,15 +125,6 @@ main :: proc() {
 	engine_init(&engine)
 	defer engine_destroy(&engine)
 
-	thread.destroy(load_model_thread)
-
-	for model, tag in engine.models {
-		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
-		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
-		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
-		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
-	}
-
 	//
 	// Main loop
 	//
@@ -148,15 +140,31 @@ main :: proc() {
 
 		free_all(context.temp_allocator)
 	}
+
+	thread.destroy(load_model_thread)
+	for model, tag in engine.models {
+		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
+		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
+		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
+		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
+	}
 }
 
 frame :: proc(engine: ^Engine) {
 	result: vk.Result
 
+	//
+	// Handle frame buffer resizing early
+	//
+	if engine.framebuffer_resized {
+		engine.framebuffer_resized = false
+		engine_recreate_swapchain(engine)
+	}
+
 	defer engine.vk_frame_index = (engine.vk_frame_index + 1) % FRAMES_IN_FLIGHT
 
 	//
-	// Before we begin our frame, we need to wait and reset draw fence
+	// Before we begin our frame, we need to wait for the draw fence
 	//
 	result = vk.WaitForFences(
 		engine.vk_device,
@@ -165,9 +173,6 @@ frame :: proc(engine: ^Engine) {
 		true,
 		bits.U64_MAX,
 	)
-	ensure(result == .SUCCESS)
-
-	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fences[engine.vk_frame_index])
 	ensure(result == .SUCCESS)
 
 	//
@@ -181,8 +186,24 @@ frame :: proc(engine: ^Engine) {
 		fence = {},
 		pImageIndex = &engine.vk_image_index,
 	)
+	#partial switch result {
+	case .SUCCESS, .SUBOPTIMAL_KHR:
+
+	case .ERROR_OUT_OF_DATE_KHR:
+		engine_recreate_swapchain(engine)
+		return
+
+	case:
+		fmt.panicf("Failed to acquire swap chain image: {}", result)
+	}
+
+	//
+	// Reset the draw fences. Must happen *after* we are sure we will render to
+	// the current image view.
+	//
+	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fences[engine.vk_frame_index])
 	ensure(result == .SUCCESS)
-	ensure(int(engine.vk_image_index) < len(engine.vk_swapchain_images))
+
 
 	//
 	// Fill the command buffer
@@ -344,7 +365,11 @@ frame :: proc(engine: ^Engine) {
 	}
 
 	result = vk.QueuePresentKHR(engine.vk_queue, &present_info)
-	ensure(result == .SUCCESS)
+	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
+		engine_recreate_swapchain(engine)
+	} else {
+		ensure(result == .SUCCESS)
+	}
 }
 
 engine_init :: proc(engine: ^Engine) {
@@ -361,7 +386,7 @@ engine_init :: proc(engine: ^Engine) {
 		ensure(bool(glfw.VulkanSupported()))
 
 		glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-		glfw.WindowHint(glfw.RESIZABLE, glfw.FALSE)
+		glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
 		engine.window = glfw.CreateWindow(1280, 678, APP_NAME, nil, nil)
 		ensure(engine.window != nil, "Failed to create a GLFW window")
 
@@ -443,6 +468,11 @@ engine_init :: proc(engine: ^Engine) {
 	engine_init_logical_device(engine)
 
 	//
+	// Initialize the command buffers
+	//
+	engine_init_command_buffers(engine)
+
+	//
 	// Create the swapchain
 	//
 	engine_init_swapchain(engine)
@@ -469,11 +499,6 @@ engine_init :: proc(engine: ^Engine) {
 	// Initialize the graphics pipelines
 	//
 	engine_init_graphics_pipeline(engine)
-
-	//
-	// Initialize the command buffer
-	//
-	engine_init_command_buffer(engine)
 }
 
 engine_init_instance :: proc(engine: ^Engine) {
@@ -553,7 +578,7 @@ engine_init_instance :: proc(engine: ^Engine) {
 
 engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	result: vk.Result
-	engine.vk_pipeline = .default
+	engine.vk_pipeline = .model_shader
 
 	//
 	// Create the shader module
@@ -612,18 +637,16 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Setup the vertex data for the pipeline
 	//
 
-	// TODO: Adapt this a bit. We are hardcoding the vertex data into
-	// the shader so we dont need to specify anything here.
 	vertex_create_info := vk.PipelineVertexInputStateCreateInfo {
 		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 
 		// vertex bindings
-		vertexBindingDescriptionCount   = 0,
-		pVertexBindingDescriptions      = nil,
+		vertexBindingDescriptionCount   = u32(len(PIPELINE_VERTEX_BINDING[engine.vk_pipeline])),
+		pVertexBindingDescriptions      = raw_data(PIPELINE_VERTEX_BINDING[engine.vk_pipeline]),
 
 		// vertex attribute
-		vertexAttributeDescriptionCount = 0,
-		pVertexAttributeDescriptions    = nil,
+		vertexAttributeDescriptionCount = u32(len(PIPELINE_VERTEX_ATTRIBUTE[engine.vk_pipeline])),
+		pVertexAttributeDescriptions    = raw_data(PIPELINE_VERTEX_ATTRIBUTE[engine.vk_pipeline]),
 	}
 
 	//
@@ -815,7 +838,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 }
 
 
-engine_init_command_buffer :: proc(engine: ^Engine) {
+engine_init_command_buffers :: proc(engine: ^Engine) {
 	result: vk.Result
 	//
 	// First create the command pool
@@ -825,7 +848,6 @@ engine_init_command_buffer :: proc(engine: ^Engine) {
 		flags            = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = engine.vk_render_queue_index,
 	}
-
 
 	result = vk.CreateCommandPool(
 		engine.vk_device,
@@ -859,6 +881,19 @@ engine_init_command_buffer :: proc(engine: ^Engine) {
 	{
 		sema_create_info := vk.SemaphoreCreateInfo {
 			sType = .SEMAPHORE_CREATE_INFO,
+		}
+
+		//
+		// Create the semaphores for the render completion
+		//
+		for &sema in engine.vk_swapchain_semas {
+			result = vk.CreateSemaphore(
+				engine.vk_device,
+				&sema_create_info,
+				&engine.vk_alloc,
+				&sema,
+			)
+			ensure(result == .SUCCESS)
 		}
 
 		//
@@ -1062,11 +1097,35 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	ensure(engine.vk_queue != nil)
 }
 
-// NOTE: Can be called multiple times in a loop / whenever the window is resized
+engine_recreate_swapchain :: proc(engine: ^Engine) {
+	//
+	// Handle the case when the application is minimized
+	//
+	w, h: i32
+	for w == 0 || h == 0 {
+		w, h = glfw.GetFramebufferSize(engine.window)
+		glfw.WaitEvents()
+	}
+
+	//
+	// We want to destroy the current swapchain before creating a new one
+	//
+	assert(engine.vk_swapchain != 0)
+	vk.DeviceWaitIdle(engine.vk_device)
+
+	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
+	engine.vk_swapchain = 0
+
+	for image_view in engine.vk_swapchain_image_views {
+		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
+	}
+	clear(&engine.vk_swapchain_image_views)
+
+	engine_init_swapchain(engine)
+}
+
 engine_init_swapchain :: proc(engine: ^Engine) {
 	result: vk.Result
-
-	ensure(engine.vk_swapchain == 0)
 
 	//
 	// Set the swapchain surface format
@@ -1257,19 +1316,6 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	}
 
 	//
-	// Create the Semaphores for rendering to the swapchain
-	//
-	resize(&engine.vk_swapchain_semas, len(engine.vk_swapchain_images))
-
-	for &sema in engine.vk_swapchain_semas {
-		create_info := vk.SemaphoreCreateInfo {
-			sType = .SEMAPHORE_CREATE_INFO,
-		}
-		result = vk.CreateSemaphore(engine.vk_device, &create_info, &engine.vk_alloc, &sema)
-		ensure(result == .SUCCESS)
-	}
-
-	//
 	// Create the image views for the swap chain
 	//
 	resize(&engine.vk_swapchain_image_views, len(engine.vk_swapchain_images))
@@ -1319,7 +1365,6 @@ engine_destroy :: proc(engine: ^Engine) {
 	for fence in engine.vk_draw_fences {
 		vk.DestroyFence(engine.vk_device, fence, &engine.vk_alloc)
 	}
-
 
 	// cmd buffer is destroyed when we destroy the pool (I think)
 	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, &engine.vk_alloc)

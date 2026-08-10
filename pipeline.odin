@@ -1,21 +1,106 @@
 package learnvk
 
 import vk "vendor:vulkan"
+
 //
 // This file is machine generated :)
 //
 
-Pipeline :: enum {default}
+Pipeline :: enum {default,model_shader}
 PIPELINE_NAME := [Pipeline]cstring {
 	.default = "default",
+	.model_shader = "model_shader",
 }
 PIPELINE_MAX_STAGES :: 2
+ModelShaderVertex :: struct {
+	pos: [3]f32,
+	normal: [3]f32,
+	texcoord: [3]f32,
+}
+
+ModelShaderInstance :: struct {
+	transform: matrix[4, 4]f32,
+	color: [4]f32,
+}
+
+PIPELINE_VERTEX_BINDING := [Pipeline][]vk.VertexInputBindingDescription {
+	.default = nil,
+	.model_shader = {
+		vk.VertexInputBindingDescription {
+			binding = 0,
+			stride = size_of(ModelShaderVertex),
+			inputRate = .VERTEX,
+		},
+		vk.VertexInputBindingDescription {
+			binding = 1,
+			stride = size_of(ModelShaderInstance),
+			inputRate = .INSTANCE,
+		},
+	},
+}
+
+PIPELINE_VERTEX_ATTRIBUTE := [Pipeline][]vk.VertexInputAttributeDescription {
+	.default = nil,
+	.model_shader = {
+		vk.VertexInputAttributeDescription {
+			location = 0,
+			binding = 0,
+			format = .R32G32B32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderVertex, "pos")),
+		},
+		vk.VertexInputAttributeDescription {
+			location = 1,
+			binding = 0,
+			format = .R32G32B32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderVertex, "normal")),
+		},
+		vk.VertexInputAttributeDescription {
+			location = 2,
+			binding = 0,
+			format = .R32G32B32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderVertex, "texcoord")),
+		},
+		vk.VertexInputAttributeDescription {
+			location = 3,
+			binding = 1,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderInstance, "transform")),
+		},
+		vk.VertexInputAttributeDescription {
+			location = 4,
+			binding = 1,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderInstance, "transform")) + 12,
+		},
+		vk.VertexInputAttributeDescription {
+			location = 5,
+			binding = 1,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderInstance, "transform")) + 24,
+		},
+		vk.VertexInputAttributeDescription {
+			location = 6,
+			binding = 1,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderInstance, "transform")) + 36,
+		},
+		vk.VertexInputAttributeDescription {
+			location = 7,
+			binding = 1,
+			format = .R32G32B32A32_SFLOAT,
+			offset = u32(offset_of_by_string(ModelShaderInstance, "color")),
+		},
+	},
+}
+
 PIPELINE_STAGES := [Pipeline][]vk.ShaderStageFlag{
 	.default = {.VERTEX, .FRAGMENT},
+	.model_shader = {.VERTEX, .FRAGMENT},
 }
 // The vk.ShaderStageFlag for each entry point is defined in the array above
 PIPELINE_STAGE_NAMES := [Pipeline][]cstring{
 	.default = {"vertMain", "fragMain"},
+	.model_shader = {"vertex", "fragment"},
 }
 PIPELINE_BYTE_CODE := [Pipeline][]u32{
 	.default = {
@@ -41,9 +126,9 @@ PIPELINE_BYTE_CODE := [Pipeline][]u32{
 		0x3f000000,0x0005002c,0x00000010,0x00000018,0x00000017,0x00000017,0x0005002c,0x00000010,
 		0x00000019,0x00000015,0x00000017,0x0006002c,0x00000013,0x0000001a,0x00000016,0x00000018,
 		0x00000019,0x0004001c,0x0000001b,0x0000000e,0x00000012,0x0004002b,0x0000000d,0x0000001c,
-		0x3f800000,0x0006002c,0x0000000e,0x0000001d,0x0000001c,0x00000014,0x00000014,0x0006002c,
+		0x3f800000,0x0006002c,0x0000000e,0x0000001d,0x0000001c,0x0000001c,0x00000014,0x0006002c,
 		0x0000000e,0x0000001e,0x00000014,0x0000001c,0x00000014,0x0006002c,0x0000000e,0x0000001f,
-		0x0000001c,0x00000014,0x0000001c,0x0006002c,0x0000001b,0x00000020,0x0000001d,0x0000001e,
+		0x00000014,0x00000014,0x0000001c,0x0006002c,0x0000001b,0x00000020,0x0000001d,0x0000001e,
 		0x0000001f,0x00040020,0x00000021,0x00000001,0x00000011,0x00040015,0x00000022,0x00000020,
 		0x00000000,0x00040020,0x00000023,0x00000007,0x0000000e,0x00040020,0x00000024,0x00000003,
 		0x0000000e,0x00040020,0x00000025,0x00000003,0x0000000f,0x00040020,0x00000026,0x00000001,
@@ -63,5 +148,35 @@ PIPELINE_BYTE_CODE := [Pipeline][]u32{
 		0x00000031,0x000100fd,0x00010038,0x00050036,0x0000000b,0x00000006,0x00000000,0x0000000c,
 		0x000200f8,0x00000034,0x0004003d,0x0000000e,0x00000035,0x00000008,0x00050050,0x0000000f,
 		0x00000036,0x00000035,0x0000001c,0x0003003e,0x00000007,0x00000036,0x000100fd,0x00010038,
+	},
+	.model_shader = {
+		0x07230203,0x00010500,0x00280000,0x0000001b,0x00000000,0x00020011,0x00000001,0x0003000e,
+		0x00000000,0x00000001,0x0009000f,0x00000000,0x00000001,0x74726576,0x00007865,0x00000002,
+		0x00000003,0x00000004,0x00000005,0x0008000f,0x00000004,0x00000006,0x67617266,0x746e656d,
+		0x00000000,0x00000007,0x00000008,0x00030010,0x00000006,0x00000007,0x00030003,0x0000000b,
+		0x00000001,0x00050005,0x00000004,0x74726576,0x702e7865,0x0000736f,0x00060005,0x00000005,
+		0x74726576,0x6e2e7865,0x616d726f,0x0000006c,0x000a0005,0x00000003,0x72746e65,0x696f5079,
+		0x6150746e,0x5f6d6172,0x74726576,0x632e7865,0x726f6c6f,0x00000000,0x00040005,0x00000001,
+		0x74726576,0x00007865,0x00050005,0x00000008,0x75706e69,0x6f632e74,0x00726f6c,0x00090005,
+		0x00000007,0x72746e65,0x696f5079,0x6150746e,0x5f6d6172,0x67617266,0x746e656d,0x00000000,
+		0x00050005,0x00000006,0x67617266,0x746e656d,0x00000000,0x00040047,0x00000004,0x0000001e,
+		0x00000000,0x00040047,0x00000005,0x0000001e,0x00000001,0x00040047,0x00000002,0x0000000b,
+		0x00000000,0x00040047,0x00000003,0x0000001e,0x00000000,0x00040047,0x00000008,0x0000001e,
+		0x00000000,0x00040047,0x00000007,0x0000001e,0x00000000,0x00020013,0x00000009,0x00030021,
+		0x0000000a,0x00000009,0x00030016,0x0000000b,0x00000020,0x00040017,0x0000000c,0x0000000b,
+		0x00000004,0x00040017,0x0000000d,0x0000000b,0x00000003,0x0004002b,0x0000000b,0x0000000e,
+		0x3f800000,0x00040020,0x0000000f,0x00000001,0x0000000d,0x00040020,0x00000010,0x00000003,
+		0x0000000c,0x00040020,0x00000011,0x00000003,0x0000000d,0x0004003b,0x0000000f,0x00000004,
+		0x00000001,0x0004003b,0x0000000f,0x00000005,0x00000001,0x0004003b,0x00000010,0x00000002,
+		0x00000003,0x0004003b,0x00000011,0x00000003,0x00000003,0x0004003b,0x0000000f,0x00000008,
+		0x00000001,0x0004003b,0x00000010,0x00000007,0x00000003,0x00050036,0x00000009,0x00000001,
+		0x00000000,0x0000000a,0x000200f8,0x00000012,0x0004003d,0x0000000d,0x00000013,0x00000004,
+		0x00050050,0x0000000c,0x00000014,0x00000013,0x0000000e,0x0004003d,0x0000000d,0x00000015,
+		0x00000005,0x00050051,0x0000000b,0x00000016,0x00000015,0x00000000,0x00060050,0x0000000d,
+		0x00000017,0x00000016,0x00000016,0x00000016,0x0003003e,0x00000002,0x00000014,0x0003003e,
+		0x00000003,0x00000017,0x000100fd,0x00010038,0x00050036,0x00000009,0x00000006,0x00000000,
+		0x0000000a,0x000200f8,0x00000018,0x0004003d,0x0000000d,0x00000019,0x00000008,0x00050050,
+		0x0000000c,0x0000001a,0x00000019,0x0000000e,0x0003003e,0x00000007,0x0000001a,0x000100fd,
+		0x00010038,
 	},
 }

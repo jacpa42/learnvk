@@ -137,15 +137,14 @@ glfw_error_callback :: proc "c" (error: i32, description: cstring) {
 	log.errorf("GLFW [%d]: %s", error, description)
 }
 
-
 callback_framebuffer_size :: proc "c" (window: glfw.WindowHandle, width, height: i32) {
-	// TODO: Implement later
+	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
+	engine.framebuffer_resized = true
 }
 
 callback_window_minimize :: proc "c" (window: glfw.WindowHandle, iconified: i32) {
-	// Get the engine from the window user pointer
 	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
-	engine.stop_rendering = bool(iconified) // Flag to not draw if we are minimized
+	engine.stop_rendering = bool(iconified)
 }
 
 vulkan_validation_callback :: proc "system" (
@@ -168,8 +167,7 @@ vulkan_validation_callback :: proc "system" (
 
 		if .ERROR in message_severity {
 			log.errorf(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
-			return false
-			// unreachable()
+			unreachable()
 		}
 
 		log.infof(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
