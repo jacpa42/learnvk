@@ -14,6 +14,7 @@ NIL_INDEX: index : bits.I32_MIN
 NUM_MODELS :: len([ModelTag]byte)
 
 MODEL_PATH := [ModelTag]string {
+	.test   = "assets/test.obj",
 	.bmw    = "assets/bmw/bmw.obj",
 	.bunny  = "assets/bunny/bunny.obj",
 	.dragon = "assets/dragon/dragon.obj",
@@ -24,17 +25,21 @@ vertex :: distinct [3]f32
 normal :: distinct [3]f32
 texcoord :: distinct [3]f32
 triangle :: distinct [3]index
+
 index :: distinct i32
 
 ModelTag :: enum {
-	bmw,
+	test,
 	bunny,
+	bmw,
 	dragon,
 	sponza,
 }
 
 Model :: struct {
 	tag:            ModelTag,
+
+	// Raw data
 	vertexes:       [dynamic]vertex,
 	normals:        [dynamic]normal,
 	texcoords:      [dynamic]texcoord,
@@ -58,7 +63,8 @@ Face :: struct {
 
 @(private = "file")
 ParsedFace :: struct {
-	triangles: [dynamic; MAX_TRIANGLES_PER_FACE]triangle,
+	triangle_len: u32,
+	triangle:     [MAX_TRIANGLES_PER_FACE]triangle,
 }
 
 model_init :: proc(m: ^Model) {
@@ -83,7 +89,7 @@ model_destroy :: proc(m: ^Model) {
 	delete(m.mesh_name_data)
 }
 
-load_all_models :: proc(models: []Model, ok: ^bool = nil) {
+model_load_all :: proc(models: []Model, ok: ^bool = nil) {
 	threads := make([]^thread.Thread, len(models), context.temp_allocator)
 	thread_ok := make([]bool, len(models), context.temp_allocator)
 
@@ -94,7 +100,7 @@ load_all_models :: proc(models: []Model, ok: ^bool = nil) {
 			arg1 = &model,
 			arg2 = MODEL_PATH[model.tag],
 			arg3 = &thread_ok[i],
-			fn = model_load_obj_path,
+			fn = model_load,
 			init_context = context,
 		)
 	}
@@ -114,7 +120,10 @@ load_all_models :: proc(models: []Model, ok: ^bool = nil) {
 	}
 }
 
-model_load_obj_path :: proc(m: ^Model, path: string, ok: ^bool = nil) {
+model_load :: model_load_obj_path
+
+// Leave string as nil to infer path from `MODEL_PATH` variable
+model_load_obj_path :: proc(m: ^Model, path: string = {}, ok: ^bool = nil) {
 	when true {
 		timer: time.Stopwatch
 		time.stopwatch_start(&timer)
@@ -131,10 +140,15 @@ model_load_obj_path :: proc(m: ^Model, path: string, ok: ^bool = nil) {
 	ok_internal: bool
 	defer if ok != nil {ok^ = ok_internal}
 
-	raw, oserr := os.read_entire_file(path, context.temp_allocator)
+	actual_path := path
+	if raw_data(actual_path) == nil || len(actual_path) == 0 {
+		actual_path = MODEL_PATH[m.tag]
+	}
+
+	raw, oserr := os.read_entire_file(actual_path, context.temp_allocator)
 	if oserr != nil {ok_internal = false; return}
 
-	fmt.eprintfln("Loading \"{}\" ({} Mib)", path, f32(len(raw)) / (1024 * 1024))
+	fmt.eprintfln("Loading \"{}\" ({} Mib)", actual_path, f32(len(raw)) / (1024 * 1024))
 
 	ok_internal = model_load_obj_memory(m, raw)
 	return
@@ -218,11 +232,11 @@ model_append_face :: proc(m: ^Model, face: ParsedFace) {
 
 	f := Face {
 		triangle_start = u32(len(m.mesh_triangles)),
-		triangle_end   = u32(len(m.mesh_triangles) + len(face.triangles)),
+		triangle_end   = u32(len(m.mesh_triangles)) + face.triangle_len,
 	}
 
 	m.meshes[len(m.meshes) - 1].face_end += 1
-	for t in face.triangles {append(&m.mesh_triangles, t)}
+	for i in 0 ..< face.triangle_len {append_elems(&m.mesh_triangles, face.triangle[i])}
 	append(&m.mesh_faces, f)
 }
 
@@ -265,32 +279,28 @@ parse_vector :: proc($T: typeid, line: string) -> (vertex: T, ok: bool) {
 parse_face :: proc(line: string) -> (face: ParsedFace, ok: bool) {
 	assert(len(line) > 4)
 
-	POINTS_PER_TRIANGLE :: 3
-	MAX_INDICIES_PER_FACE :: MAX_TRIANGLES_PER_FACE * POINTS_PER_TRIANGLE
-
-	i := 0
 	s := transmute([]byte)(line[2:])
-	f := ([^]index)(raw_data(face.triangles[:]))
 	sign: index = 1
 
-	for index_index in 0 ..< MAX_INDICIES_PER_FACE {
-		f[index_index] = NIL_INDEX
-	}
-
+	idx: int
 	for b in s {
 		switch b {
 		case '-':
 			sign = -1
 		case '0' ..= '9':
-			assert(i < MAX_INDICIES_PER_FACE)
-			f[i] = (f[i] * 10) + sign * index(b - '0')
-		case:
+			face.triangle[face.triangle_len][idx] =
+				(face.triangle[face.triangle_len][idx] * 10) + sign * index(b - '0')
+		case '/':
+			idx += 1
 			sign = 1
-			i += 1
+		case ' ':
+			idx = 0
+			sign = 1
+			face.triangle_len += 1
+		case:
+			unreachable()
 		}
 	}
-
-	non_zero_resize(&face.triangles, i / POINTS_PER_TRIANGLE)
 
 	ok = true
 	return

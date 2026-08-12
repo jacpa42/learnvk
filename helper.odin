@@ -7,6 +7,80 @@ import "core:mem"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+engine_create_buffer :: proc(
+	engine: ^Engine,
+	properties: ^vk.PhysicalDeviceMemoryProperties,
+	size: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+	desired_properties: vk.MemoryPropertyFlags,
+) -> (
+	buffer: vk.Buffer,
+	memory: vk.DeviceMemory,
+) {
+	create_info := vk.BufferCreateInfo {
+		sType       = .BUFFER_CREATE_INFO,
+		size        = size,
+		usage       = usage,
+		sharingMode = .EXCLUSIVE,
+	}
+
+	result := vk.CreateBuffer(engine.vk_device, &create_info, &engine.vk_alloc, &buffer)
+	ensure(result == .SUCCESS)
+
+	requirements: vk.MemoryRequirements
+	vk.GetBufferMemoryRequirements(engine.vk_device, buffer, &requirements)
+
+	memory_type_index := device_get_buffer_memory_type(
+		properties,
+		requirements,
+		desired_properties,
+	)
+
+	alloc_info := vk.MemoryAllocateInfo {
+		sType           = .MEMORY_ALLOCATE_INFO,
+		allocationSize  = requirements.size,
+		memoryTypeIndex = memory_type_index,
+	}
+
+	result = vk.AllocateMemory(engine.vk_device, &alloc_info, &engine.vk_alloc, &memory)
+	ensure(result == .SUCCESS)
+
+	result = vk.BindBufferMemory(
+		engine.vk_device,
+		buffer = buffer,
+		memory = memory,
+		memoryOffset = 0, // TODO: What is this about?
+	)
+	ensure(result == .SUCCESS)
+
+	return
+}
+
+//
+// Given the properties of the currently bound physical device, find the memory
+// type we will use for the buffer given the memory requirements.
+//
+device_get_buffer_memory_type :: proc(
+	properties: ^vk.PhysicalDeviceMemoryProperties,
+	requirements: vk.MemoryRequirements,
+	desired_properties: vk.MemoryPropertyFlags,
+) -> (
+	memory_type_index: u32,
+) {
+	for ; memory_type_index < properties.memoryTypeCount; memory_type_index += 1 {
+		is_compatible := requirements.memoryTypeBits & (u32(1) << memory_type_index) > 0
+		has_desired_properties :=
+			(desired_properties & properties.memoryTypes[memory_type_index].propertyFlags) ==
+			desired_properties
+
+		if is_compatible && has_desired_properties {
+			return
+		}
+	}
+
+	unreachable()
+}
+
 //
 // Used for converting the memory format of an image to be more suitable for
 // different tasks such as rendering and displaying to the screen.
@@ -214,4 +288,3 @@ make_or_clear :: proc(item: ^[dynamic]$T) {
 		clear(item)
 	}
 }
-

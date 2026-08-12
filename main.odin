@@ -7,9 +7,13 @@ import "core:log"
 import "core:math/bits"
 import "core:mem"
 import "core:slice"
-import "core:thread"
 import "vendor:glfw"
 import vk "vendor:vulkan"
+
+// https://docs.vulkan.org/tutorial/latest/05_Uniform_buffers/00_Descriptor_set_layout_and_buffer.html
+
+pipeline :: Pipeline.model_shader
+CURRENT_MODEL :: ModelTag.bunny
 
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
 ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
@@ -18,6 +22,20 @@ MAX_SWAPCHAIN_IMAGES :: 8
 FRAMES_IN_FLIGHT :: 2
 MAX_DYNAMIC_STATE :: 90
 APP_NAME: cstring = "learnvk"
+
+MAX_NORMALS :: 438368
+MAX_TEXCOORDS :: 91964
+MAX_TRIANGLES :: 1742612
+MAX_VERTEXES :: 435545
+
+Buffer :: enum {
+	// Special buffer for transfering data
+	transfer,
+	model_triangles,
+	model_vertexes,
+	model_normals,
+	model_texcoords,
+}
 
 g_logger: runtime.Logger
 g_trace: trace.Context
@@ -62,14 +80,15 @@ Engine :: struct {
 	// Pipeline
 	//
 	vk_pipeline_cache:                      vk.PipelineCache,
-	vk_pipeline:                            Pipeline,
-	vk_render_pipeline:                     [Pipeline]vk.Pipeline,
-	vk_viewport:                            [Pipeline]vk.Viewport,
-	vk_scissor:                             [Pipeline]vk.Rect2D,
-	vk_color_attachment:                    [Pipeline]vk.PipelineColorBlendAttachmentState,
-	vk_pipeline_dynamic_state:              [Pipeline][dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
-	vk_pipeline_shader:                     [Pipeline]vk.ShaderModule,
-	vk_pipeline_layout:                     [Pipeline]vk.PipelineLayout,
+	vk_render_pipeline:                     vk.Pipeline,
+	vk_viewport:                            vk.Viewport,
+	vk_scissor:                             vk.Rect2D,
+	vk_color_attachment:                    vk.PipelineColorBlendAttachmentState,
+	vk_pipeline_dynamic_state:              [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
+	vk_pipeline_shader:                     vk.ShaderModule,
+	vk_vertex_buffers:                      [Buffer]vk.Buffer,
+	vk_vertex_buffer_memory:                [Buffer]vk.DeviceMemory,
+	vk_pipeline_layout:                     vk.PipelineLayout,
 
 	//
 	// Command buffer
@@ -115,12 +134,18 @@ main :: proc() {
 
 	for &model, tag in engine.models {model.tag = tag}
 
-	load_model_thread := thread.create_and_start_with_poly_data2(
-		arg1 = (([^]Model)(&engine.models))[:NUM_MODELS],
-		arg2 = (^bool)(nil),
-		fn = load_all_models,
-		init_context = context,
-	)
+	//
+	// Load all the models in a multithreaded fashion
+	//
+	model_load(&engine.models[CURRENT_MODEL])
+	// TODO:load other models
+
+	for model, tag in engine.models {
+		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
+		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
+		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
+		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
+	}
 
 	engine_init(&engine)
 	defer engine_destroy(&engine)
@@ -139,14 +164,6 @@ main :: proc() {
 		frame(&engine)
 
 		free_all(context.temp_allocator)
-	}
-
-	thread.destroy(load_model_thread)
-	for model, tag in engine.models {
-		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
-		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
-		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
-		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
 	}
 }
 
@@ -203,7 +220,6 @@ frame :: proc(engine: ^Engine) {
 	//
 	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fences[engine.vk_frame_index])
 	ensure(result == .SUCCESS)
-
 
 	//
 	// Fill the command buffer
@@ -285,23 +301,29 @@ frame :: proc(engine: ^Engine) {
 			vk.CmdBindPipeline(
 				engine.vk_cmdbufs[engine.vk_frame_index],
 				.GRAPHICS,
-				engine.vk_render_pipeline[engine.vk_pipeline],
+				engine.vk_render_pipeline,
 			)
-			vk.CmdSetViewport(
-				engine.vk_cmdbufs[engine.vk_frame_index],
-				0,
-				1,
-				&engine.vk_viewport[engine.vk_pipeline],
+			vk.CmdSetViewport(engine.vk_cmdbufs[engine.vk_frame_index], 0, 1, &engine.vk_viewport)
+			vk.CmdSetScissor(engine.vk_cmdbufs[engine.vk_frame_index], 0, 1, &engine.vk_scissor)
+
+			//
+			// Bind the vertex buffers
+			//
+
+			model := engine.models[CURRENT_MODEL]
+
+			pOffsets: vk.DeviceSize = 0
+			vk.CmdBindVertexBuffers(
+				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+				firstBinding = 0,
+				bindingCount = 1,
+				pBuffers = &engine.vk_vertex_buffers[.model_vertexes],
+				pOffsets = &pOffsets,
 			)
-			vk.CmdSetScissor(
-				engine.vk_cmdbufs[engine.vk_frame_index],
-				0,
-				1,
-				&engine.vk_scissor[engine.vk_pipeline],
-			)
+
 			vk.CmdDraw(
 				engine.vk_cmdbufs[engine.vk_frame_index],
-				vertexCount = 3,
+				vertexCount = u32(len(model.vertexes)),
 				instanceCount = 1,
 				firstVertex = 0,
 				firstInstance = 0,
@@ -578,42 +600,186 @@ engine_init_instance :: proc(engine: ^Engine) {
 
 engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	result: vk.Result
-	engine.vk_pipeline = .model_shader
 
 	//
 	// Create the shader module
 	//
 	shader_module_create_info := vk.ShaderModuleCreateInfo {
 		sType    = .SHADER_MODULE_CREATE_INFO,
-		codeSize = slice.size(PIPELINE_BYTE_CODE[engine.vk_pipeline]),
-		pCode    = raw_data(PIPELINE_BYTE_CODE[engine.vk_pipeline]),
+		codeSize = slice.size(PIPELINE_BYTE_CODE[pipeline]),
+		pCode    = raw_data(PIPELINE_BYTE_CODE[pipeline]),
 	}
 
 	result = vk.CreateShaderModule(
 		engine.vk_device,
 		&shader_module_create_info,
 		&engine.vk_alloc,
-		&engine.vk_pipeline_shader[engine.vk_pipeline],
+		&engine.vk_pipeline_shader,
 	)
 	ensure(result == .SUCCESS)
 
 	//
+	// Create the vertex buffers
+	//
+
+	properties: vk.PhysicalDeviceMemoryProperties
+	vk.GetPhysicalDeviceMemoryProperties(engine.vk_physical_device, &properties)
+
+	for tag in Buffer {
+
+		size: vk.DeviceSize
+		usage: vk.BufferUsageFlags
+		desired_properties: vk.MemoryPropertyFlags
+
+		switch tag {
+		case .transfer:
+			size = 64 * mem.Megabyte
+			usage = {.TRANSFER_SRC}
+			desired_properties = {.HOST_VISIBLE, .HOST_COHERENT}
+
+		case .model_triangles:
+			size = MAX_TRIANGLES * size_of(triangle)
+			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+			desired_properties = {.DEVICE_LOCAL}
+
+		case .model_vertexes:
+			size = MAX_VERTEXES * size_of(vertex)
+			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+			desired_properties = {.DEVICE_LOCAL}
+
+		case .model_normals:
+			size = MAX_VERTEXES * size_of(normal)
+			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+			desired_properties = {.DEVICE_LOCAL}
+
+		case .model_texcoords:
+			size = MAX_VERTEXES * size_of(texcoord)
+			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+			desired_properties = {.DEVICE_LOCAL}
+		}
+
+		engine.vk_vertex_buffers[tag], engine.vk_vertex_buffer_memory[tag] = engine_create_buffer(
+			engine,
+			&properties,
+			size,
+			usage,
+			desired_properties,
+		)
+	}
+
+	//
+	// Fill the vertex buffers with data
+	//
+	// NOTE: I just upload the test data here
+	//
+	model := engine.models[CURRENT_MODEL]
+
+	//
+	// Upload the data
+	//
+	for tag in Buffer {
+		bytes: []u8
+
+		switch tag {
+		case .transfer:
+			continue
+
+		case .model_triangles:
+			bytes = slice.to_bytes(model.mesh_triangles[:])
+
+		case .model_vertexes:
+			bytes = slice.to_bytes(model.vertexes[:])
+
+		case .model_normals:
+			bytes = slice.to_bytes(model.normals[:])
+
+		case .model_texcoords:
+			bytes = slice.to_bytes(model.texcoords[:])
+
+		}
+
+		assert(bytes != nil)
+
+		//
+		// upload first to the staging buffer
+		//
+		{
+			mapped: rawptr
+			result = vk.MapMemory(
+				engine.vk_device,
+				engine.vk_vertex_buffer_memory[.transfer],
+				offset = 0,
+				size = auto_cast slice.size(bytes),
+				flags = {},
+				ppData = &mapped,
+			)
+			ensure(result == .SUCCESS)
+
+			mem.copy_non_overlapping(dst = mapped, src = raw_data(bytes), len = len(bytes))
+
+			vk.UnmapMemory(engine.vk_device, engine.vk_vertex_buffer_memory[.transfer])
+		}
+
+		begin_info := vk.CommandBufferBeginInfo {
+			sType            = .COMMAND_BUFFER_BEGIN_INFO,
+			flags            = {.ONE_TIME_SUBMIT},
+			pInheritanceInfo = nil,
+		}
+
+		result = vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
+		ensure(result == .SUCCESS)
+
+		//
+		// The copy into our buffer. This involves submitting command via the
+		// command buffer.
+		//
+
+		region := vk.BufferCopy {
+			srcOffset = 0,
+			dstOffset = 0,
+			size      = auto_cast slice.size(bytes),
+		}
+
+		vk.CmdCopyBuffer(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcBuffer = engine.vk_vertex_buffers[.transfer],
+			dstBuffer = engine.vk_vertex_buffers[tag],
+			regionCount = 1,
+			pRegions = &region,
+		)
+
+		//
+		// Submit the commands
+		//
+
+		result = vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
+		ensure(result == .SUCCESS)
+
+		submit_info := vk.SubmitInfo {
+			sType = .SUBMIT_INFO,
+		}
+
+		result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, fence = 0)
+		ensure(result == .SUCCESS)
+
+		vk.QueueWaitIdle(engine.vk_queue)
+	}
+
+	//
 	// For each stage that the shader defines, define the stage creation info
 	//
-	ensure(
-		len(PIPELINE_STAGES[engine.vk_pipeline]) == len(PIPELINE_STAGE_NAMES[engine.vk_pipeline]),
-	)
+	ensure(len(PIPELINE_STAGES) == len(PIPELINE_STAGE_NAMES))
 	shader_stage_create_info: [dynamic; PIPELINE_MAX_STAGES]vk.PipelineShaderStageCreateInfo
 
-	for shader_stage, stage_index in PIPELINE_STAGES[engine.vk_pipeline] {
+	for shader_stages, stage_index in PIPELINE_STAGES[pipeline] {
 		append(
 			&shader_stage_create_info,
 			vk.PipelineShaderStageCreateInfo {
 				sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 				flags = {},
-				stage = {shader_stage},
-				module = engine.vk_pipeline_shader[engine.vk_pipeline],
-				pName = PIPELINE_STAGE_NAMES[engine.vk_pipeline][stage_index],
+				stage = {shader_stages},
+				module = engine.vk_pipeline_shader,
+				pName = PIPELINE_STAGE_NAMES[pipeline][stage_index],
 				pSpecializationInfo = nil,
 			},
 		)
@@ -622,15 +788,12 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	// Setup dynamic state for the pipeline. At the moment, just viewport and scissor.
 	//
-	append(
-		&engine.vk_pipeline_dynamic_state[engine.vk_pipeline],
-		..[]vk.DynamicState{.VIEWPORT, .SCISSOR},
-	)
+	append(&engine.vk_pipeline_dynamic_state, ..[]vk.DynamicState{.VIEWPORT, .SCISSOR})
 
 	dynamic_state_create_info := vk.PipelineDynamicStateCreateInfo {
 		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = u32(len(engine.vk_pipeline_dynamic_state[engine.vk_pipeline])),
-		pDynamicStates    = raw_data(engine.vk_pipeline_dynamic_state[engine.vk_pipeline][:]),
+		dynamicStateCount = u32(len(engine.vk_pipeline_dynamic_state)),
+		pDynamicStates    = raw_data(engine.vk_pipeline_dynamic_state[:]),
 	}
 
 	//
@@ -641,12 +804,12 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 
 		// vertex bindings
-		vertexBindingDescriptionCount   = u32(len(PIPELINE_VERTEX_BINDING[engine.vk_pipeline])),
-		pVertexBindingDescriptions      = raw_data(PIPELINE_VERTEX_BINDING[engine.vk_pipeline]),
+		vertexBindingDescriptionCount   = u32(len(PIPELINE_VERTEX_BINDING[pipeline])),
+		pVertexBindingDescriptions      = raw_data(PIPELINE_VERTEX_BINDING[pipeline]),
 
 		// vertex attribute
-		vertexAttributeDescriptionCount = u32(len(PIPELINE_VERTEX_ATTRIBUTE[engine.vk_pipeline])),
-		pVertexAttributeDescriptions    = raw_data(PIPELINE_VERTEX_ATTRIBUTE[engine.vk_pipeline]),
+		vertexAttributeDescriptionCount = u32(len(PIPELINE_VERTEX_ATTRIBUTE[pipeline])),
+		pVertexAttributeDescriptions    = raw_data(PIPELINE_VERTEX_ATTRIBUTE[pipeline]),
 	}
 
 	//
@@ -661,7 +824,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	// Do the viewport creation
 	//
-	engine.vk_viewport[engine.vk_pipeline] = vk.Viewport {
+	engine.vk_viewport = vk.Viewport {
 		x        = 0,
 		y        = 0,
 		width    = f32(engine.vk_swapchain_extent.width),
@@ -670,7 +833,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		maxDepth = 1,
 	}
 
-	engine.vk_scissor[engine.vk_pipeline] = vk.Rect2D {
+	engine.vk_scissor = vk.Rect2D {
 		offset = {},
 		extent = engine.vk_swapchain_extent,
 	}
@@ -715,7 +878,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 
 	// Only one color attachment for now
-	engine.vk_color_attachment[engine.vk_pipeline] = {
+	engine.vk_color_attachment = {
 		blendEnable         = true,
 		srcColorBlendFactor = .SRC_ALPHA,
 		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
@@ -726,23 +889,20 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		colorWriteMask      = {.R, .G, .B, .A},
 	}
 
-
 	color_blend_create_info := vk.PipelineColorBlendStateCreateInfo {
 		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 		logicOpEnable   = false,
 		logicOp         = .COPY,
 		attachmentCount = 1,
-		pAttachments    = &engine.vk_color_attachment[engine.vk_pipeline],
+		pAttachments    = &engine.vk_color_attachment,
 	}
 
 	//
 	// Define and create the pipeline layout
 	//
+
 	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-
-		// TODO: Parse the json reflect information on the shader provided by
-		// slangc to define these structures automatically
 
 		// set layouts
 		setLayoutCount         = 0,
@@ -757,10 +917,10 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		engine.vk_device,
 		&pipeline_layout_create_info,
 		&engine.vk_alloc,
-		&engine.vk_pipeline_layout[engine.vk_pipeline],
+		&engine.vk_pipeline_layout,
 	)
 	ensure(result == .SUCCESS)
-	ensure(engine.vk_pipeline_layout[engine.vk_pipeline] != {})
+	ensure(engine.vk_pipeline_layout != {})
 
 	//
 	// Define the rendering pipeline
@@ -803,7 +963,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 
 		// Actually a lot of flags here
 		flags               = {},
-		stageCount          = u32(len(PIPELINE_STAGES[engine.vk_pipeline])),
+		stageCount          = u32(len(PIPELINE_STAGES)),
 		pStages             = &shader_stage_create_info[0],
 		pVertexInputState   = &vertex_create_info,
 		pInputAssemblyState = &input_assembly_create_info,
@@ -814,7 +974,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		pDepthStencilState  = nil,
 		pColorBlendState    = &color_blend_create_info,
 		pDynamicState       = &dynamic_state_create_info,
-		layout              = engine.vk_pipeline_layout[engine.vk_pipeline],
+		layout              = engine.vk_pipeline_layout,
 
 		// NOTE: Used to derive a pipeline from another with
 		// PipelineCreateFlag.DERIVATIVE. Leaving nil at the moment
@@ -832,7 +992,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		1,
 		&pipeline_create_info,
 		&engine.vk_alloc,
-		&engine.vk_render_pipeline[engine.vk_pipeline],
+		&engine.vk_render_pipeline,
 	)
 	ensure(result == .SUCCESS)
 }
@@ -1350,6 +1510,14 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 engine_destroy :: proc(engine: ^Engine) {
 	vk.DeviceWaitIdle(engine.vk_device)
 
+	for mem in engine.vk_vertex_buffer_memory {
+		vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
+	}
+
+	for buffer in engine.vk_vertex_buffers {
+		vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
+	}
+
 	for &model in engine.models {
 		model_destroy(&model)
 	}
@@ -1371,13 +1539,9 @@ engine_destroy :: proc(engine: ^Engine) {
 	engine.vk_cmdbufs = {}
 
 	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, &engine.vk_alloc)
-	for p in Pipeline {
-		vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout[p], &engine.vk_alloc)
-		vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline[p], &engine.vk_alloc)
-	}
-	for shader in engine.vk_pipeline_shader {
-		vk.DestroyShaderModule(engine.vk_device, shader, &engine.vk_alloc)
-	}
+	vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout, &engine.vk_alloc)
+	vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline, &engine.vk_alloc)
+	vk.DestroyShaderModule(engine.vk_device, engine.vk_pipeline_shader, &engine.vk_alloc)
 	for image_view in engine.vk_swapchain_image_views {
 		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
 	}

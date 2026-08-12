@@ -1,12 +1,12 @@
-struct Vertex {
-    float3 pos;
-    float3 normal;
-    float3 texcoord;
-};
+// The buffers which contain our model data
+StructuredBuffer<float3> buf_pos;
+StructuredBuffer<float3> buf_normal;
+StructuredBuffer<float3> buf_texcoord;
 
-struct Instance {
-    float4x4 transform;
-    float4 color;
+struct Vertex {
+    uint pos;
+    uint normal;
+    uint texcoord;
 };
 
 struct VertexOutput {
@@ -19,12 +19,17 @@ static float3 lightdir = float3(1.0, 0.0, 0.0);
 [shader("vertex")]
 VertexOutput vertex(
     Vertex vertex,
-    Instance instance,
     uint instanceID : SV_InstanceID
 ) {
+
+    float3 pos = buf_pos[vertex.pos];
+    float3 normal = buf_normal[vertex.normal];
+    float3 texcoord = buf_texcoord[vertex.texcoord];
+
     VertexOutput output;
-    output.pos = float4(vertex.pos, 1.0);
-    output.color = dot(lightdir, vertex.normal);
+    output.pos = float4(pos, 1.0);
+    output.color = dot(lightdir, normal);
+    output.color.xy *= texcoord.xy;
     return output;
 }
 

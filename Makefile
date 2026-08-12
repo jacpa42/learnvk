@@ -8,13 +8,13 @@ COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-pa
 DEBUG_FLAGS := $(COMMON_FLAGS) -debug
 RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -lto:thin -no-bounds-check
 
-.PHONY: shad debug release t r rr
+.PHONY: shad r_shad debug release t r rr
 
-debug:
+debug: r_shad
 	@echo "debug compile main"
 	$(COMPILE_MAIN) $(DEBUG_FLAGS)
 
-release:
+release: r_shad
 	@echo "release compile"
 	$(COMPILE_MAIN) $(RELEASE_FLAGS)
 
@@ -30,4 +30,7 @@ rr: release
 shad:
 	@echo "debug compile shader processor"
 	$(COMPILE_SHADER_PROCCESOR) $(DEBUG_FLAGS)
+
+r_shad:
 	./$(SHADER_PROCCESOR_PATH) pipeline.odin $$(fd -HI -tf -eslang)
+

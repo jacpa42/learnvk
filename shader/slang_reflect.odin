@@ -14,6 +14,28 @@ STAGE_NAME := [Stage]vulkan.ShaderStageFlag {
 
 SlangReflectData :: struct {
 	entryPoints: []SlangEntryPoint,
+	parameters:  []ShaderParameter,
+}
+
+ShaderParameter :: struct {
+	name:    string,
+	binding: struct {
+		index: int,
+		kind:  enum {
+			descriptorTableSlot,
+		},
+	},
+	type:    ShaderParameterType,
+}
+
+ShaderParameterType :: struct {
+	resultType: FieldType,
+	baseShape:  enum {
+		structuredBuffer,
+	},
+	kind:       enum {
+		resource,
+	},
 }
 
 SlangEntryPoint :: struct {
@@ -74,6 +96,8 @@ FieldType :: struct {
 }
 
 Scalar :: enum {
+	none,
+
 	// signed
 	int8,
 	int16,

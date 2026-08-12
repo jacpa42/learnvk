@@ -3,10 +3,13 @@ package shader
 import "core:fmt"
 import "core:log"
 import "core:strings"
+import "vendor:vulkan"
+
 
 VertexShaderInfo :: struct {
 	shader_path: string,
 	ep:          SlangEntryPoint,
+	params:      []ShaderParameter,
 }
 
 //
@@ -38,7 +41,10 @@ append_vertex_input_description :: proc(
 		assert(vertex_entry.stage == .vertex)
 
 		if found {
-			append(&vertex_shader_info, VertexShaderInfo{shader_paths[i], vertex_entry})
+			append(
+				&vertex_shader_info,
+				VertexShaderInfo{shader_paths[i], vertex_entry, sr.parameters},
+			)
 		} else {
 			log.warnf("Failed to find the vertex shader entry point in {}", shader_paths[i])
 		}
@@ -195,11 +201,76 @@ append_vertex_input_description :: proc(
 	}
 
 	append(o, "}\n\n")
+
+	//
+	// Then create an enumerated array of vertex set layout descriptions
+	//
+
+	append(o, "PIPELINE_SET_LAYOUTS := [Pipeline][]vk.DescriptorSetLayoutBinding {\n")
+
+	for vs in vertex_shader_info {
+		shader_enum_name := make_shader_enum_variant(vs.shader_path)
+
+		append(o, "\t.")
+		append(o, shader_enum_name)
+		append(o, " = ")
+
+		if !vs_has_params(vs) {
+			append(o, "nil,\n")
+			continue
+		}
+
+		append(o, "{\n")
+
+		for param in vs.params {
+
+			append(o, "\t\tvk.DescriptorSetLayoutBinding {\n")
+
+			// binding: u32
+			append(o, fmt.tprintf("\t\t\tbinding = {},\n", param.binding.index))
+
+			// descriptorType:  vulkan.DescriptorType,
+			descriptor_type := shader_param_get_descriptor_type(param)
+			append(o, fmt.tprintf("\t\t\tdescriptorType = .{},\n", descriptor_type))
+
+			// descriptorCount:  u32,
+			// NOTE: I hardcode the descriptorCount to 1
+			append(o, "\t\t\tdescriptorCount = 1,\n")
+
+			// stageFlags: vulkan.ShaderStageFlags,
+			append(o, "\t\t\tstageFlags = vk.ShaderStageFlags_ALL_GRAPHICS,\n")
+
+			append(o, "\t\t},\n")
+		}
+		append(o, "\t},\n\n")
+	}
+
+	append(o, "}\n\n")
+
+	//
+	// Add the largest number of set layouts as a constant
+	//
+	pipeline_max_set_layouts := 0
+	for vs in vertex_shader_info {
+		pipeline_max_set_layouts = max(pipeline_max_set_layouts, len(vs.params))
+	}
+	append(o, fmt.tprintf("PIPELINE_MAX_SET_LAYOUTS :: {}\n\n", pipeline_max_set_layouts))
+}
+
+shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> string {
+	switch shader_param.type.baseShape {
+	case .structuredBuffer:
+		return "STORAGE_BUFFER_DYNAMIC"
+	}
+
+	assert(false)
+	return {}
 }
 
 // The `count` field of the struct member defines how many times we should
 // repeat this layout
 param_get_vk_format :: proc(f: Field) -> (count: int, offset_per_attribute: int, format: string) {
+
 	switch f.type.kind {
 	case "vector":
 		assert(f.type.elementCount > 0)
@@ -231,7 +302,7 @@ param_get_vk_format :: proc(f: Field) -> (count: int, offset_per_attribute: int,
 		append(&format_array, bit_size)
 
 		append(&format_array, '_')
-		vulkan_name := scalar_get_vulkan_name(f.type.elementType.scalarType)
+		vulkan_name := scalar_get_vulkan_name(f.type.scalarType)
 		append(&format_array, vulkan_name)
 
 		count = 1
@@ -344,42 +415,52 @@ field_to_odin_name_and_type :: proc(f: Field) -> (name: string, type: string) {
 // odinfmt: disable
 scalar_get_byte_size_int :: proc(scalar_type: Scalar) -> int {
     switch scalar_type {
+    case .none: assert(false)
+
     case .int8,  .uint8,  .bool8:             return 1
     case .int16, .uint16, .float16, .bool16:  return 2
     case .int32, .uint32, .bool32,  .float32: return 3
     case .int64, .uint64, .float64:           return 4
     }
 
-    unreachable()
+    assert(false)
+    return 0
 }
 // odinfmt: enable
 // odinfmt: disable
 scalar_get_bit_size :: proc(scalar_type: Scalar) -> string {
     switch scalar_type {
+    case .none: assert(false)
+
     case .int8,  .uint8,  .bool8:             return "8"
     case .int16, .uint16, .float16, .bool16:  return "16"
     case .int32, .uint32, .bool32,  .float32: return "32"
     case .int64, .uint64, .float64:           return "64"
     }
 
-    unreachable()
+    assert(false)
+    return {}
 }
 // odinfmt: enable
 // odinfmt: disable
-scalar_get_vulkan_name :: proc(scalar_type: Scalar) -> string {
+scalar_get_vulkan_name :: proc(scalar_type: Scalar) -> (name: string) {
 	switch scalar_type {
-	case .int8,    .int16,   .int32,  .int64:  return "SINT"
-	case .uint8,   .uint16,  .uint32, .uint64: return "UINT"
-	case .bool8,   .bool16,  .bool32:          return "UINT"
-	case .float16, .float32, .float64:         return "SFLOAT"
+    case .none: assert(false)
+
+	case .int8,    .int16,   .int32,  .int64:  name = "SINT"
+	case .uint8,   .uint16,  .uint32, .uint64: name = "UINT"
+	case .bool8,   .bool16,  .bool32:          name = "UINT"
+	case .float16, .float32, .float64:         name = "SFLOAT"
 	}
 
-	unreachable()
+    return
 }
 // odinfmt: enable
 // odinfmt: disable
 make_odin_scalar_name :: proc(scalar_type: Scalar) -> string {
     switch scalar_type {
+    case .none: assert(false)
+
     case .int8:    return "i8"
     case .int16:   return "i16"
     case .int32:   return "i32"
@@ -399,7 +480,8 @@ make_odin_scalar_name :: proc(scalar_type: Scalar) -> string {
     case .float64: return "f64"
     }
 
-    unreachable()
+    assert(false)
+    return {}
 }
 // odinfmt: enable
 
