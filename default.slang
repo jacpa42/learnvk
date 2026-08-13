@@ -1,30 +1,36 @@
-static float3 colors[3] = float3[](
-    float3(1.0, 1.0, 0.0),
-    float3(0.0, 1.0, 0.0),
-    float3(0.0, 0.0, 1.0)
-);
-
-struct VertexInput {
-    float3 position;
+struct UniformBuffer {
+    float4x4 screen_from_world;
+    float4x4 world_from_model;
+    float4x4 model_from_vertex;
+    float    __padding;
+    float3   lightdir;
 };
 
+ConstantBuffer<UniformBuffer> uniforms;
+
+struct VertexInput {
+    float3 pos;
+};
 
 struct VertexOutput {
-    float3 color;
-    float4 sv_position : SV_Position;
+    float4 color;
+    float4 pos : SV_Position;
 };
 
 [shader("vertex")]
 VertexOutput vertMain(VertexInput input, uint vid : SV_VertexID) {
     VertexOutput output;
-    output.sv_position = float4(input.position, 1.0);
-    output.color = colors[vid];
+    output.pos = float4(input.pos, 1.0);
+    output.color = float4(1.0, input.pos.yz, 1.0);
+
+    output.pos = mul(uniforms.model_from_vertex, output.pos);
+    output.pos = mul(uniforms.world_from_model,  output.pos);
+    output.pos = mul(uniforms.screen_from_world, output.pos);
+
     return output;
 }
 
 [shader("fragment")]
-float4 fragMain(VertexOutput inVert) : SV_Target
-{
-    float3 color = inVert.color;
-    return float4(color, 1.0);
+float4 fragMain(VertexOutput inVert) : SV_Target {
+    return inVert.color;
 }

@@ -1,10 +1,10 @@
 package shader
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:log"
 import "core:strings"
 import "vendor:vulkan"
-
 
 VertexShaderInfo :: struct {
 	shader_path: string,
@@ -57,25 +57,29 @@ append_vertex_input_description :: proc(
 		shader_struct_name := make_shader_struct_variant(vs.shader_path)
 
 		for param in vs.ep.parameters {
-			if len(param.type.name) == 0 {continue}
+			slang_struct := slang_type_parse(param.type)
+			#partial switch t in slang_struct {
+			case SlangStruct:
+				assert(t.name != {})
 
-			append(o, shader_struct_name)
-			append(o, param.type.name)
-			append(o, " :: struct {\n")
+				append(o, shader_struct_name)
+				append(o, t.name)
+				append(o, " :: struct {\n")
 
-			for field in param.type.fields {
-				odin_name, odin_type := field_to_odin_name_and_type(field)
-				assert(raw_data(odin_name) != nil && raw_data(odin_type) != nil)
+				for field in t.fields {
+					odin_type := field_to_odin_name_and_type(field.type)
+					assert(raw_data(odin_type) != nil)
 
-				append(o, '\t')
-				append(o, odin_name)
-				append(o, ": ")
-				append(o, odin_type)
-				append(o, ",\n")
+					append(o, '\t')
+					append(o, field.name)
+					append(o, ": ")
+					append(o, odin_type)
+					append(o, ",\n")
+				}
+
+				append(o, "}\n\n")
+
 			}
-
-			append(o, "}\n\n")
-
 		}
 	}
 
@@ -102,24 +106,26 @@ append_vertex_input_description :: proc(
 
 		append(o, "{\n")
 
-		for param, binding_no in vs.ep.parameters {
-			if len(param.type.name) == 0 {continue}
+		for param_enum, binding_no in vs.ep.parameters {
+			slang_type := slang_type_parse(param_enum.type)
+			#partial switch param in slang_type {
+			case SlangStruct:
+				append(o, "\t\tvk.VertexInputBindingDescription {\n")
 
-			append(o, "\t\tvk.VertexInputBindingDescription {\n")
+				// binding: u32
+				append(o, fmt.tprintf("\t\t\tbinding = {},\n", binding_no))
 
-			// binding: u32
-			append(o, fmt.tprintf("\t\t\tbinding = {},\n", binding_no))
+				// stride: u32
+				append(o, "\t\t\tstride = size_of(")
+				append(o, shader_struct_name)
+				append(o, param.name)
+				append(o, "),\n")
 
-			// stride: u32
-			append(o, "\t\t\tstride = size_of(")
-			append(o, shader_struct_name)
-			append(o, param.type.name)
-			append(o, "),\n")
-
-			// inputRate: enum c.int { VERTEX = 0, INSTANCE = 1 }
-			append(o, "\t\t\tinputRate = ")
-			append(o, param_guess_input_rate(param))
-			append(o, ",\n\t\t},\n")
+				// inputRate: enum c.int { VERTEX = 0, INSTANCE = 1 }
+				append(o, "\t\t\tinputRate = ")
+				append(o, param_guess_input_rate(param.name))
+				append(o, ",\n\t\t},\n")
+			}
 
 		}
 
@@ -152,47 +158,49 @@ append_vertex_input_description :: proc(
 
 		location: int
 
-		for param, binding_no in vs.ep.parameters {
-			if len(param.type.name) == 0 {continue}
+		for param_union, binding_no in vs.ep.parameters {
+			slang_type := slang_type_parse(param_union.type)
+			#partial switch param in slang_type {
+			case SlangStruct:
+				for param_field in param.fields {
+					count, offset_per_attribute, vkformat := param_get_vk_format(param_field.type)
 
-			for param_field in param.type.fields {
-				count, offset_per_attribute, vkformat := param_get_vk_format(param_field)
+					total_offset_to_add: int
 
-				total_offset_to_add: int
+					for _ in 0 ..< count {
+						defer total_offset_to_add += offset_per_attribute
+						append(o, "\t\tvk.VertexInputAttributeDescription {\n")
 
-				for _ in 0 ..< count {
-					defer total_offset_to_add += offset_per_attribute
-					append(o, "\t\tvk.VertexInputAttributeDescription {\n")
+						// location: u32
+						append(o, fmt.tprintf("\t\t\tlocation = {},\n", location))
+						location += 1
 
-					// location: u32
-					append(o, fmt.tprintf("\t\t\tlocation = {},\n", location))
-					location += 1
+						// binding: u32
+						append(o, fmt.tprintf("\t\t\tbinding = {},\n", binding_no))
 
-					// binding: u32
-					append(o, fmt.tprintf("\t\t\tbinding = {},\n", binding_no))
+						// format: vulkan.Format
+						append(o, fmt.tprintf("\t\t\tformat = .{},\n", vkformat))
 
-					// format: vulkan.Format
-					append(o, fmt.tprintf("\t\t\tformat = .{},\n", vkformat))
+						// offset:   u32,
 
-					// offset:   u32,
+						//
+						// Get the base offset of the element using offset_of_by_string
+						//
+						append(o, "\t\t\toffset = u32(offset_of_by_string(")
+						append(o, shader_struct_name)
+						append(o, param.name)
+						append(o, ", \"")
+						append(o, param_field.name)
+						append(o, "\"))")
 
-					//
-					// Get the base offset of the element using offset_of_by_string
-					//
-					append(o, "\t\t\toffset = u32(offset_of_by_string(")
-					append(o, shader_struct_name)
-					append(o, param.type.name)
-					append(o, ", \"")
-					append(o, param_field.name)
-					append(o, "\"))")
+						if total_offset_to_add == 0 {
+							append(o, ",\n")
+						} else {
+							append(o, fmt.tprintf(" + {},\n", total_offset_to_add))
+						}
 
-					if total_offset_to_add == 0 {
-						append(o, ",\n")
-					} else {
-						append(o, fmt.tprintf(" + {},\n", total_offset_to_add))
+						append(o, "\t\t},\n")
 					}
-
-					append(o, "\t\t},\n")
 				}
 			}
 		}
@@ -224,6 +232,9 @@ append_vertex_input_description :: proc(
 
 		for param in vs.params {
 
+			// Add a comment about where this layout is coming from
+			append(o, fmt.tprintf("\t\t// For \"{}\" binding\n", param.name))
+
 			append(o, "\t\tvk.DescriptorSetLayoutBinding {\n")
 
 			// binding: u32
@@ -237,8 +248,20 @@ append_vertex_input_description :: proc(
 			// NOTE: I hardcode the descriptorCount to 1
 			append(o, "\t\t\tdescriptorCount = 1,\n")
 
+			shader_stages := shader_param_get_stage_flags(param)
 			// stageFlags: vulkan.ShaderStageFlags,
-			append(o, "\t\t\tstageFlags = vk.ShaderStageFlags_ALL_GRAPHICS,\n")
+			append(o, "\t\t\tstageFlags = {")
+			index := 0
+			for flag in shader_stages {
+				defer index += 1
+
+				append(o, fmt.tprintf(".{}", flag))
+				if index < card(shader_stages) - 1 {
+					append(o, ", ")
+				}
+			}
+			append(o, "},\n")
+
 
 			append(o, "\t\t},\n")
 		}
@@ -257,10 +280,24 @@ append_vertex_input_description :: proc(
 	append(o, fmt.tprintf("PIPELINE_MAX_SET_LAYOUTS :: {}\n\n", pipeline_max_set_layouts))
 }
 
-shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> string {
-	switch shader_param.type.baseShape {
-	case .structuredBuffer:
-		return "STORAGE_BUFFER_DYNAMIC"
+shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.ShaderStageFlags {
+	switch shader_param.type.kind {
+	case .constantBuffer:
+		return {.VERTEX}
+	case .resource:
+		return vulkan.ShaderStageFlags_ALL_GRAPHICS
+	}
+
+	assert(false)
+	return {}
+}
+
+shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulkan.DescriptorType {
+	switch shader_param.type.kind {
+	case .constantBuffer:
+		return .UNIFORM_BUFFER
+	case .resource:
+		return .STORAGE_BUFFER
 	}
 
 	assert(false)
@@ -269,23 +306,35 @@ shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> strin
 
 // The `count` field of the struct member defines how many times we should
 // repeat this layout
-param_get_vk_format :: proc(f: Field) -> (count: int, offset_per_attribute: int, format: string) {
+param_get_vk_format :: proc(
+	field: SlangType,
+) -> (
+	count: int,
+	offset_per_attribute: int,
+	format: string,
+) {
+	switch f in field {
+	case SlangStruct:
+		unreachable()
+	// TODO
 
-	switch f.type.kind {
-	case "vector":
-		assert(f.type.elementCount > 0)
+	case SlangScalar:
+		return param_get_vk_format(SlangVector{1, f})
+
+	case SlangVector:
+		assert(f.count > 0)
 
 		color_order := []u8{'R', 'G', 'B', 'A'}
-		bit_size := scalar_get_bit_size(f.type.elementType.scalarType)
+		bit_size := scalar_get_bit_size(f.type)
 
 		format_array := make([dynamic]u8, 0, 32, context.temp_allocator)
-		for i in 0 ..< f.type.elementCount {
+		for i in 0 ..< f.count {
 			append(&format_array, color_order[i])
 			append(&format_array, bit_size)
 		}
 
 		append(&format_array, '_')
-		vulkan_name := scalar_get_vulkan_name(f.type.elementType.scalarType)
+		vulkan_name := scalar_get_vulkan_name(f.type)
 		append(&format_array, vulkan_name)
 
 		count = 1
@@ -293,54 +342,37 @@ param_get_vk_format :: proc(f: Field) -> (count: int, offset_per_attribute: int,
 		format = string(format_array[:])
 		return
 
-	case "scalar":
-		bit_size := scalar_get_bit_size(f.type.scalarType)
-
-		format_array := make([dynamic]u8, 0, 32, context.temp_allocator)
-
-		append(&format_array, 'R')
-		append(&format_array, bit_size)
-
-		append(&format_array, '_')
-		vulkan_name := scalar_get_vulkan_name(f.type.scalarType)
-		append(&format_array, vulkan_name)
-
-		count = 1
-		offset_per_attribute = 0
-		format = string(format_array[:])
-		return
-
-	case "matrix":
-		assert(f.type.columnCount > 0)
-		assert(f.type.rowCount > 0)
+	case SlangMatrix:
+		assert(f.rows > 0)
+		assert(f.columns > 0)
 
 		color_order := []u8{'R', 'G', 'B', 'A'}
-		bit_size := scalar_get_bit_size(f.type.elementType.scalarType)
+		bit_size := scalar_get_bit_size(f.type)
 
 		format_array := make([dynamic]u8, 0, 32, context.temp_allocator)
-		for i in 0 ..< f.type.rowCount {
+		for i in 0 ..< f.rows {
 			append(&format_array, color_order[i])
 			append(&format_array, bit_size)
 		}
 
 		append(&format_array, '_')
-		vulkan_name := scalar_get_vulkan_name(f.type.elementType.scalarType)
+		vulkan_name := scalar_get_vulkan_name(f.type)
 		append(&format_array, vulkan_name)
 
-		byte_size_int := scalar_get_byte_size_int(f.type.elementType.scalarType)
+		byte_size_int := scalar_get_byte_size_int(f.type)
 
-		count = f.type.columnCount
-		offset_per_attribute = f.type.columnCount * byte_size_int
+		count = f.rows
+		offset_per_attribute = f.columns * byte_size_int
 		format = string(format_array[:])
 		return
 
 	case:
-		fmt.panicf("unknown field type: {}", f.type.kind)
+		fmt.panicf("unknown field type: {}", field)
 	}
 }
 
-param_guess_input_rate :: proc(param: StageParameter) -> string {
-	lowercase_name := strings.to_lower(param.type.name, context.temp_allocator)
+param_guess_input_rate :: proc(name: string) -> string {
+	lowercase_name := strings.to_lower(name, context.temp_allocator)
 
 	if strings.contains(lowercase_name, "instance") {
 		return ".INSTANCE"
@@ -355,34 +387,30 @@ param_guess_input_rate :: proc(param: StageParameter) -> string {
 
 vs_has_params :: proc(vs: VertexShaderInfo) -> (has_params: bool) {
 	for param in vs.ep.parameters {
-		has_params |= (len(param.type.name) > 0)
+		is_struct := param.type["kind"].(json.String) == "struct"
+		has_params |= is_struct
 	}
 
 	return
 }
 
-field_to_odin_name_and_type :: proc(f: Field) -> (name: string, type: string) {
+field_to_odin_name_and_type :: proc(field: SlangType) -> (type: string) {
+	switch f in field {
 
-	//
-	// We just copy the name in slang
-	//
-	name = f.name
+	case SlangStruct:
+		return f.name
 
-	//
-	// For the type it is a bit more involved
-	//
-	switch f.type.kind {
-	case "vector":
-		// [elementCount]elementType.scalarType
-		assert(f.type.elementCount > 0)
-		odin_scalar_name := make_odin_scalar_name(f.type.elementType.scalarType)
-		type = fmt.tprintf("[{}]{}", f.type.elementCount, odin_scalar_name)
+	case SlangVector:
+		// [elementCount]elementType.SlangScalar
+		assert(f.count > 0)
+		odin_scalar_name := make_odin_scalar_name(f.type)
+		type = fmt.tprintf("[{}]{}", f.count, odin_scalar_name)
 
-	case "scalar":
-		// scalarType
-		type = make_odin_scalar_name(f.type.scalarType)
+	case SlangScalar:
+		// SlangScalar
+		type = make_odin_scalar_name(f)
 
-	case "matrix":
+	case SlangMatrix:
 		//
 		// From 'https://shader-slang.org/slang/user-guide/a1-01-matrix-layout.html':
 		// ```
@@ -393,19 +421,14 @@ field_to_odin_name_and_type :: proc(f: Field) -> (name: string, type: string) {
 		//
 		// matrix[row, col]elementType
 
-		assert(f.type.rowCount > 0)
-		assert(f.type.columnCount > 0)
+		assert(f.rows > 0)
+		assert(f.columns > 0)
 
-		odin_scalar_name := make_odin_scalar_name(f.type.elementType.scalarType)
-		type = fmt.tprintf(
-			"matrix[{}, {}]{}",
-			f.type.rowCount,
-			f.type.columnCount,
-			odin_scalar_name,
-		)
+		odin_scalar_name := make_odin_scalar_name(f.type)
+		type = fmt.tprintf("matrix[{}, {}]{}", f.rows, f.columns, odin_scalar_name)
 
-	case:
-		fmt.panicf("unknown field type: {}", f.type.kind)
+	case nil:
+		panic("ahh")
 	}
 
 	return
@@ -413,7 +436,7 @@ field_to_odin_name_and_type :: proc(f: Field) -> (name: string, type: string) {
 
 
 // odinfmt: disable
-scalar_get_byte_size_int :: proc(scalar_type: Scalar) -> int {
+scalar_get_byte_size_int :: proc(scalar_type: SlangScalar) -> int {
     switch scalar_type {
     case .none: assert(false)
 
@@ -428,7 +451,7 @@ scalar_get_byte_size_int :: proc(scalar_type: Scalar) -> int {
 }
 // odinfmt: enable
 // odinfmt: disable
-scalar_get_bit_size :: proc(scalar_type: Scalar) -> string {
+scalar_get_bit_size :: proc(scalar_type: SlangScalar) -> string {
     switch scalar_type {
     case .none: assert(false)
 
@@ -443,7 +466,7 @@ scalar_get_bit_size :: proc(scalar_type: Scalar) -> string {
 }
 // odinfmt: enable
 // odinfmt: disable
-scalar_get_vulkan_name :: proc(scalar_type: Scalar) -> (name: string) {
+scalar_get_vulkan_name :: proc(scalar_type: SlangScalar) -> (name: string) {
 	switch scalar_type {
     case .none: assert(false)
 
@@ -457,7 +480,7 @@ scalar_get_vulkan_name :: proc(scalar_type: Scalar) -> (name: string) {
 }
 // odinfmt: enable
 // odinfmt: disable
-make_odin_scalar_name :: proc(scalar_type: Scalar) -> string {
+make_odin_scalar_name :: proc(scalar_type: SlangScalar) -> string {
     switch scalar_type {
     case .none: assert(false)
 

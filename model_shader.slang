@@ -1,8 +1,3 @@
-// The buffers which contain our model data
-StructuredBuffer<float3> buf_pos;
-StructuredBuffer<float3> buf_normal;
-StructuredBuffer<float3> buf_texcoord;
-
 struct Vertex {
     uint pos;
     uint normal;
@@ -14,22 +9,39 @@ struct VertexOutput {
     float3 color;
 };
 
-static float3 lightdir = float3(1.0, 0.0, 0.0);
+struct UniformBuffer {
+    float4x4 screen_from_world;
+    float4x4 world_from_model;
+    float4x4 model_from_vertex;
+    float    __padding;
+    float3   lightdir;
+};
+
+ConstantBuffer<UniformBuffer> uniforms;
+
+// The buffers which contain our model data
+StructuredBuffer<float3> buf_pos;
+StructuredBuffer<float3> buf_normal;
+StructuredBuffer<float3> buf_texcoord;
 
 [shader("vertex")]
 VertexOutput vertex(
     Vertex vertex,
     uint instanceID : SV_InstanceID
 ) {
-
     float3 pos = buf_pos[vertex.pos];
     float3 normal = buf_normal[vertex.normal];
     float3 texcoord = buf_texcoord[vertex.texcoord];
 
     VertexOutput output;
     output.pos = float4(pos, 1.0);
-    output.color = dot(lightdir, normal);
-    output.color.xy *= texcoord.xy;
+    output.color = dot(uniforms.lightdir, normal);
+    // output.color.xy *= texcoord.xy;
+
+    output.pos = mul(uniforms.model_from_vertex, output.pos);
+    output.pos = mul(uniforms.world_from_model,  output.pos);
+    output.pos = mul(uniforms.screen_from_world, output.pos);
+
     return output;
 }
 

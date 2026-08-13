@@ -30,6 +30,7 @@ rr: release
 shad:
 	@echo "debug compile shader processor"
 	$(COMPILE_SHADER_PROCCESOR) $(DEBUG_FLAGS)
+	./$(SHADER_PROCCESOR_PATH) pipeline.odin $$(fd -HI -tf -eslang)
 
 r_shad:
 	./$(SHADER_PROCCESOR_PATH) pipeline.odin $$(fd -HI -tf -eslang)

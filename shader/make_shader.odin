@@ -249,14 +249,7 @@ CompileTaskData :: struct #all_or_none {
 compile_shader_to_spirv :: proc(data: CompileTaskData) {
 	temp_dir, _ := os.temp_dir(context.temp_allocator)
 	json_reflect_path, _ := os.join_path(
-		{
-			temp_dir,
-			fmt.tprintf(
-				"{}.{}.tmp.json",
-				filepath.base(data.shader_path),
-				os.get_current_thread_id(),
-			),
-		},
+		{temp_dir, fmt.tprintf("{}.json", filepath.base(data.shader_path))},
 		context.temp_allocator,
 	)
 
@@ -303,7 +296,6 @@ compile_shader_to_spirv :: proc(data: CompileTaskData) {
 	data.output^ = ptr[:len]
 
 	data.reflect_arena^, data.reflect_data^ = slang_reflect_unmarshal(json_reflect_path)
-	// os.remove(json_reflect_path)
 
 	return
 }
