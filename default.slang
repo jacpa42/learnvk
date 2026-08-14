@@ -2,8 +2,8 @@ struct UniformBuffer {
     float4x4 screen_from_world;
     float4x4 world_from_model;
     float4x4 model_from_vertex;
-    float    __padding;
     float3   lightdir;
+    float    __padding;
 };
 
 ConstantBuffer<UniformBuffer> uniforms;

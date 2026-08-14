@@ -21,6 +21,12 @@ import vk "vendor:vulkan"
 // Constants
 PIPELINE :: Pipeline.model_shader
 CURRENT_MODEL :: ModelTag.bunny
+LINE_WIDTH: f32 : 1
+POLYGON_MODE :: vk.PolygonMode.FILL
+PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
+CULL_MODE :: vk.CullModeFlags{.BACK}
+FRONT_FACE :: vk.FrontFace.CLOCKWISE
+ENABLE_DEPTH_TEST :: true
 
 NUM_MODELS :: len([ModelTag]byte)
 
@@ -55,14 +61,14 @@ Uniforms :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
-	__padding:         f32,
 	lightdir:          [3]f32,
+	__padding:         f32,
 }
 
 ModelBuffer :: enum {
 	// model data buffers
-	model_faces,
-	model_position,
+	model_points,
+	model_vertices,
 	model_normals,
 	model_texcoords,
 }
@@ -74,7 +80,8 @@ Engine :: struct {
 	window:                                 glfw.WindowHandle,
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
-	models:                                 [ModelTag]OBJ,
+	model_loaded:                           bit_set[ModelTag],
+	models:                                 [ModelTag]Model,
 
 	//
 	// Vulkan stuff
@@ -129,7 +136,7 @@ Engine :: struct {
 	//
 	vk_transfer_buffer:                     vk.Buffer,
 	vk_transfer_buffer_memory:              vk.DeviceMemory,
-	vk_vertex_buffers:                      [ModelTag][ModelBuffer]vk.Buffer,
+	vk_model_buffer:                        [ModelTag][ModelBuffer]vk.Buffer,
 	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
 
 	//
@@ -193,7 +200,6 @@ main :: proc() {
 	// Init engine
 	//
 	engine: Engine
-
 	engine_init(&engine)
 	defer engine_destroy(&engine)
 
@@ -344,7 +350,7 @@ frame :: proc(engine: ^Engine) {
 			imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 			loadOp = .CLEAR,
 			storeOp = .STORE,
-			clearValue = vk.ClearValue{depthStencil = {depth = 1, stencil = 0}},
+			clearValue = vk.ClearValue{depthStencil = {depth = 10, stencil = 0}},
 		}
 
 
@@ -414,13 +420,13 @@ frame :: proc(engine: ^Engine) {
 				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 				firstBinding = 0,
 				bindingCount = 1,
-				pBuffers = &engine.vk_vertex_buffers[CURRENT_MODEL][.model_faces],
+				pBuffers = &engine.vk_model_buffer[CURRENT_MODEL][.model_points],
 				pOffsets = &pOffsets,
 			)
 
 			vk.CmdDraw(
 				engine.vk_cmdbufs[engine.vk_frame_index],
-				vertexCount = u32(len(model.attrib.faces)),
+				vertexCount = model_get_num_points(model),
 				instanceCount = 1,
 				firstVertex = 0,
 				firstInstance = 0,
@@ -496,7 +502,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 	// Engine setup uniforms
 	//
 
-	t := f32(time.tick_now()._nsec) * 1e-9
+	t := f32(glfw.GetTime())
 	aspect :=
 		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
 
@@ -510,7 +516,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 		),
 		world_from_model  = linalg.matrix4_look_at_f32(
 			eye = engine.eye,
-			centre = {0, 0, 0},
+			centre = 0,
 			up = {0, 0, 1},
 			flip_z_axis = true,
 		),
@@ -530,22 +536,26 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Setup the default state to generate the uniforms
 	//
-	engine.eye = {2, 2, 2}
+	engine.eye = 2
 
-	engine.models[CURRENT_MODEL] = parse_obj_path(
-		MODEL_PATH[CURRENT_MODEL],
-		flags = {.triangulate},
-	)
-	// TODO:load other models
+	//
+	// Load the models we want to look at
+	//
+	model_load_ok: bool
+	model_load(&engine.models[CURRENT_MODEL], MODEL_PATH[CURRENT_MODEL], &model_load_ok)
+	assert(model_load_ok)
 
-	for model, tag in engine.models {
-		if !model.success {continue}
+	if model_load_ok do engine.model_loaded |= {CURRENT_MODEL}
 
-		fmt.eprintfln("{} faces = {}", tag, len(model.attrib.faces))
-		fmt.eprintfln("{} vertices = {}", tag, len(model.attrib.vertices))
-		fmt.eprintfln("{} normals = {}", tag, len(model.attrib.normals))
-		fmt.eprintfln("{} texcoords = {}", tag, len(model.attrib.texcoords))
+	for tag in engine.model_loaded {
+		model := engine.models[tag]
+
+		fmt.eprintfln("{} faces = {}", tag, len(model.faces))
+		fmt.eprintfln("{} vertices = {}", tag, len(model.vertices))
+		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
+		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
 	}
+
 
 	//
 	// Initialize GLFW and create our window
@@ -819,7 +829,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	input_assembly_create_info := vk.PipelineInputAssemblyStateCreateInfo {
 		sType                  = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology               = .TRIANGLE_LIST,
+		topology               = PRIMITIVE_TOPOLOGY,
 		primitiveRestartEnable = false,
 	}
 
@@ -838,11 +848,11 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		sType                   = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		depthClampEnable        = false,
 		rasterizerDiscardEnable = false,
-		polygonMode             = .FILL,
-		cullMode                = {.BACK},
-		frontFace               = .CLOCKWISE,
+		polygonMode             = POLYGON_MODE,
+		cullMode                = CULL_MODE,
+		frontFace               = FRONT_FACE,
 		depthBiasEnable         = false,
-		lineWidth               = 1,
+		lineWidth               = LINE_WIDTH,
 		depthBiasConstantFactor = {},
 		depthBiasClamp          = {},
 		depthBiasSlopeFactor    = {},
@@ -921,17 +931,19 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Define the depth stencil state for the pipeline
 	//
 	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
-		sType                 = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		flags                 = {},
-		depthTestEnable       = true,
-		depthWriteEnable      = true,
-		depthCompareOp        = .LESS,
-		depthBoundsTestEnable = false,
-		stencilTestEnable     = false,
+		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		flags            = {},
+		depthTestEnable  = ENABLE_DEPTH_TEST,
+		depthWriteEnable = true,
+		depthCompareOp   = .LESS,
+
+		// stencilTestEnable     = false,
 		// front:                 StencilOpState,
 		// back:                  StencilOpState,
-		// minDepthBounds:        f32,
-		// maxDepthBounds:        f32,
+
+		// depthBoundsTestEnable = true,
+		// minDepthBounds        = 0,
+		// maxDepthBounds        = 10,
 	}
 
 	//
@@ -1077,12 +1089,7 @@ engine_init_buffers :: proc(engine: ^Engine) {
 	// Fill the vertex buffers with data
 	//
 
-	for model_tag in ModelTag {
-		if !engine.models[model_tag].success {
-			log.warnf("Skipping {}", model_tag)
-			continue
-		}
-
+	for model_tag in engine.model_loaded {
 		for buffer_tag in ModelBuffer {
 			memory_to_upload: []byte
 			size: vk.DeviceSize
@@ -1091,27 +1098,27 @@ engine_init_buffers :: proc(engine: ^Engine) {
 
 			switch buffer_tag {
 
-			case .model_faces:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.faces[:])
-				size = auto_cast slice.size(engine.models[model_tag].attrib.faces[:])
+			case .model_points:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].faces[:])
+				size = auto_cast slice.size(engine.models[model_tag].faces[:])
 				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
-			case .model_position:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.vertices[:])
-				size = auto_cast slice.size(engine.models[model_tag].attrib.vertices[:])
+			case .model_vertices:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].vertices[:])
+				size = auto_cast slice.size(engine.models[model_tag].vertices[:])
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_normals:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.normals[:])
-				size = auto_cast slice.size(engine.models[model_tag].attrib.normals[:])
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].normals[:])
+				size = auto_cast slice.size(engine.models[model_tag].normals[:])
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_texcoords:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.texcoords[:])
-				size = auto_cast slice.size(engine.models[model_tag].attrib.texcoords[:])
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].texcoords[:])
+				size = auto_cast slice.size(engine.models[model_tag].texcoords[:])
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 			}
@@ -1129,9 +1136,8 @@ engine_init_buffers :: proc(engine: ^Engine) {
 			assert(len(memory_to_upload) > 0)
 			assert(int(size) == slice.size(memory_to_upload))
 
-			engine.vk_vertex_buffers[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
+			engine.vk_model_buffer[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
 				engine_create_buffer(engine, &properties, size, usage, desired_properties)
-
 
 			//
 			// upload first to the staging buffer
@@ -1165,7 +1171,7 @@ engine_init_buffers :: proc(engine: ^Engine) {
 			vk.CmdCopyBuffer(
 				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 				srcBuffer = engine.vk_transfer_buffer,
-				dstBuffer = engine.vk_vertex_buffers[model_tag][buffer_tag],
+				dstBuffer = engine.vk_model_buffer[model_tag][buffer_tag],
 				regionCount = 1,
 				pRegions = &region,
 			)
@@ -1205,7 +1211,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		flags         = {.FREE_DESCRIPTOR_SET},
-		maxSets       = 2 * len(ModelTag) * len(ModelBuffer),
+		maxSets       = len(pool_sizes) * len(ModelTag) * len(ModelBuffer),
 		poolSizeCount = len(pool_sizes),
 		pPoolSizes    = raw_data(&pool_sizes),
 	}
@@ -1306,13 +1312,13 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 				buf_info.buffer = engine.vk_uniform_buffers[0]
 
 			case .buf_pos:
-				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_position]
+				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_vertices]
 
 			case .buf_normal:
-				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_normals]
+				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_normals]
 
 			case .buf_texcoord:
-				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_texcoords]
+				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_texcoords]
 
 			}
 
@@ -2002,14 +2008,14 @@ engine_destroy :: proc(engine: ^Engine) {
 	for buffer in engine.vk_uniform_buffers {
 		vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
 	}
-	for model_buffers in engine.vk_vertex_buffers {
+	for model_buffers in engine.vk_model_buffer {
 		for buffer in model_buffers {
 			vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
 		}
 	}
 
-	for &model in engine.models {
-		obj_destroy(&model)
+	for tag in engine.model_loaded {
+		model_destroy(&engine.models[tag])
 	}
 
 	for sema in engine.vk_swapchain_semas {

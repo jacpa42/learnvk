@@ -4,7 +4,7 @@ COMPILE_MAIN := odin build . -out:$(MAIN_EXE_PATH) -build-mode:exe
 SHADER_PROCCESOR_PATH := bin/shader_proccesor
 COMPILE_SHADER_PROCCESOR := odin build shader -out:$(SHADER_PROCCESOR_PATH) -build-mode:exe
 
-COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-param -vet-using-stmt -thread-count:12 -warnings-as-errors -vet-unused-variables
+COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-param -vet-using-stmt -warnings-as-errors -vet-unused-variables
 DEBUG_FLAGS := $(COMMON_FLAGS) -debug
 RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -lto:thin -no-bounds-check
 
