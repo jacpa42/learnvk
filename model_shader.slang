@@ -1,12 +1,12 @@
 struct Vertex {
     uint pos;
-    uint normal;
     uint texcoord;
+    uint normal;
 };
 
 struct VertexOutput {
     float4 pos : SV_Position;
-    float3 color;
+    float4 color;
 };
 
 struct UniformBuffer {
@@ -22,7 +22,7 @@ ConstantBuffer<UniformBuffer> uniforms;
 // The buffers which contain our model data
 StructuredBuffer<float3> buf_pos;
 StructuredBuffer<float3> buf_normal;
-StructuredBuffer<float3> buf_texcoord;
+StructuredBuffer<float2> buf_texcoord;
 
 [shader("vertex")]
 VertexOutput vertex(
@@ -31,12 +31,12 @@ VertexOutput vertex(
 ) {
     float3 pos = buf_pos[vertex.pos];
     float3 normal = buf_normal[vertex.normal];
-    float3 texcoord = buf_texcoord[vertex.texcoord];
+    float2 texcoord = buf_texcoord[vertex.texcoord];
 
     VertexOutput output;
     output.pos = float4(pos, 1.0);
-    output.color = dot(uniforms.lightdir, normal);
-    // output.color.xy *= texcoord.xy;
+    // output.color = float4(float3(dot(normal, uniforms.lightdir)), 1.0);
+    output.color = output.pos;
 
     output.pos = mul(uniforms.model_from_vertex, output.pos);
     output.pos = mul(uniforms.world_from_model,  output.pos);
@@ -47,5 +47,5 @@ VertexOutput vertex(
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    return float4(input.color, 1.0);
+    return input.color;
 }

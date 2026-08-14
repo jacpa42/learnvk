@@ -210,47 +210,68 @@ append_vertex_input_description :: proc(
 
 	append(o, "}\n\n")
 
-	//
-	// Then create an enumerated array of vertex set layout descriptions
-	//
 
-	append(o, "PIPELINE_SET_LAYOUTS := [Pipeline][]vk.DescriptorSetLayoutBinding {\n")
+	//
+	// Create an enum of all the resources which need a descriptor set
+	//
 
 	for vs in vertex_shader_info {
-		shader_enum_name := make_shader_enum_variant(vs.shader_path)
-
-		append(o, "\t.")
+		shader_enum_name := make_shader_struct_variant(vs.shader_path)
 		append(o, shader_enum_name)
-		append(o, " = ")
-
-		if !vs_has_params(vs) {
-			append(o, "nil,\n")
-			continue
-		}
-
-		append(o, "{\n")
+		append(o, "Binding :: enum {\n")
 
 		for param in vs.params {
 
 			// Add a comment about where this layout is coming from
-			append(o, fmt.tprintf("\t\t// For \"{}\" binding\n", param.name))
+			append(o, '\t')
+			append(o, param.name)
+			append(o, ",\n")
+		}
+		append(o, "}\n\n")
+	}
 
-			append(o, "\t\tvk.DescriptorSetLayoutBinding {\n")
+	//
+	// Then create an enumerated array of vertex set layout descriptions
+	//
+
+
+	for vs in vertex_shader_info {
+		if !vs_has_params(vs) {
+			continue
+		}
+
+		shader_struct_name := make_shader_struct_variant(vs.shader_path)
+		shader_enum_name_upper := make_shader_enum_variant_upper(vs.shader_path)
+
+		append(
+			o,
+			fmt.tprintf(
+				"{}_PIPELINE_SET_LAYOUTS := [{}Binding]vk.DescriptorSetLayoutBinding {{\n",
+				shader_enum_name_upper,
+				shader_struct_name,
+			),
+		)
+
+		for param in vs.params {
+
+			// Add a comment about where this layout is coming from
+			append(o, "\t.")
+			append(o, param.name)
+			append(o, " = vk.DescriptorSetLayoutBinding {\n")
 
 			// binding: u32
-			append(o, fmt.tprintf("\t\t\tbinding = {},\n", param.binding.index))
+			append(o, fmt.tprintf("\t\tbinding = {},\n", param.binding.index))
 
 			// descriptorType:  vulkan.DescriptorType,
 			descriptor_type := shader_param_get_descriptor_type(param)
-			append(o, fmt.tprintf("\t\t\tdescriptorType = .{},\n", descriptor_type))
+			append(o, fmt.tprintf("\t\tdescriptorType = .{},\n", descriptor_type))
 
 			// descriptorCount:  u32,
 			// NOTE: I hardcode the descriptorCount to 1
-			append(o, "\t\t\tdescriptorCount = 1,\n")
+			append(o, "\t\tdescriptorCount = 1,\n")
 
 			shader_stages := shader_param_get_stage_flags(param)
-			// stageFlags: vulkan.ShaderStageFlags,
-			append(o, "\t\t\tstageFlags = {")
+			append(o, "\t\tstageFlags = {")
 			index := 0
 			for flag in shader_stages {
 				defer index += 1
@@ -263,12 +284,12 @@ append_vertex_input_description :: proc(
 			append(o, "},\n")
 
 
-			append(o, "\t\t},\n")
+			append(o, "\t},\n")
 		}
-		append(o, "\t},\n\n")
+
+		append(o, "}\n\n")
 	}
 
-	append(o, "}\n\n")
 
 	//
 	// Add the largest number of set layouts as a constant
@@ -285,7 +306,7 @@ shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.Sh
 	case .constantBuffer:
 		return {.VERTEX}
 	case .resource:
-		return vulkan.ShaderStageFlags_ALL_GRAPHICS
+		return {.VERTEX}
 	}
 
 	assert(false)

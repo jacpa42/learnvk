@@ -7,6 +7,25 @@ import "core:mem"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+find_format :: proc(
+	engine: ^Engine,
+	candidates: []vk.Format,
+	tiling: vk.ImageTiling,
+	features: vk.FormatFeatureFlags,
+) -> vk.Format {
+	for format in candidates {
+		properties: vk.FormatProperties
+		vk.GetPhysicalDeviceFormatProperties(engine.vk_physical_device, format, &properties)
+
+		if (tiling == .LINEAR && features <= properties.linearTilingFeatures) ||
+		   (tiling == .OPTIMAL && features <= properties.optimalTilingFeatures) {
+			return format
+		}
+	}
+
+	unreachable()
+}
+
 engine_create_buffer :: proc(
 	engine: ^Engine,
 	properties: ^vk.PhysicalDeviceMemoryProperties,
@@ -91,6 +110,7 @@ image_change_layout :: proc(
 	old_layout, new_layout: vk.ImageLayout,
 	src_access, dst_access: vk.AccessFlags2,
 	src_stage, dst_stage: vk.PipelineStageFlags2,
+	aspect_mask: vk.ImageAspectFlags,
 ) {
 	image_memory_barrier := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
@@ -104,7 +124,7 @@ image_change_layout :: proc(
 		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		image = image,
 		subresourceRange = {
-			aspectMask = {.COLOR},
+			aspectMask = aspect_mask,
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
@@ -209,6 +229,19 @@ glfw_error_callback :: proc "c" (error: i32, description: cstring) {
 	context = runtime.default_context()
 	context.logger = g_logger
 	log.errorf("GLFW [%d]: %s", error, description)
+}
+
+callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
+	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
+
+	if key == glfw.KEY_A && action == glfw.PRESS {
+		engine.eye -= 0.4
+	}
+
+	if key == glfw.KEY_S && action == glfw.PRESS {
+		engine.eye += 0.4
+	}
+
 }
 
 callback_framebuffer_size :: proc "c" (window: glfw.WindowHandle, width, height: i32) {

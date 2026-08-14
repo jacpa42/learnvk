@@ -162,9 +162,8 @@ slang_type_parse_struct :: proc(
 ) -> (
 	o: SlangStruct,
 ) {
-	when ODIN_DEBUG {
-		context.allocator = mem.nil_allocator()
-	}
+	context.allocator = mem.nil_allocator()
+
 	assert(v["kind"].(json.String) == "struct")
 
 	//
@@ -190,7 +189,7 @@ slang_type_parse_struct :: proc(
 	// fields
 	//
 	fields := v["fields"].(json.Array)
-	o.fields = make([]SlangField, len(sizes), allocator)
+	o.fields = make([]SlangField, len(fields), allocator)
 	for &f, i in o.fields {
 		f = slang_field_parse(fields[i].(json.Object))
 	}

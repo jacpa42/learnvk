@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:debug/trace"
 import "core:fmt"
 import "core:log"
-import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
 import "core:mem"
@@ -13,27 +12,44 @@ import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-// https://docs.vulkan.org/tutorial/latest/05_Uniform_buffers/00_Descriptor_set_layout_and_buffer.html
 
-PIPELINE :: Pipeline.default
-CURRENT_MODEL :: ModelTag.test
+//
+// https://docs.vulkan.org/tutorial/latest/07_Depth_buffering.html
+// /home/jacob/Projects/game_programming/learnvk/main.odin:374:23
+//
+
+// Constants
+PIPELINE :: Pipeline.model_shader
+CURRENT_MODEL :: ModelTag.bunny
+
+NUM_MODELS :: len([ModelTag]byte)
+
+MODEL_PATH := [ModelTag]string {
+	.test   = "assets/test.obj",
+	.bmw    = "assets/bmw/bmw.obj",
+	.bunny  = "assets/bunny/bunny.obj",
+	.dragon = "assets/dragon/dragon.obj",
+	.sponza = "assets/sponza/sponza.obj",
+}
 
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
 ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
 MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
 MAX_SWAPCHAIN_IMAGES :: 8
 FRAMES_IN_FLIGHT :: 2
-MODEL_STORAGE_BUFFER_COUNT :: 4
 MAX_DYNAMIC_STATE :: 90
 APP_NAME: cstring = "learnvk"
 
-MAX_NORMALS :: 438368
-MAX_TEXCOORDS :: 91964
-MAX_TRIANGLES :: 1742612
-MAX_VERTEXES :: 435545
-
 g_logger: runtime.Logger
 g_trace: trace.Context
+
+ModelTag :: enum {
+	test,
+	bunny,
+	bmw,
+	dragon,
+	sponza,
+}
 
 Uniforms :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
@@ -43,13 +59,10 @@ Uniforms :: struct #all_or_none #align (16) {
 	lightdir:          [3]f32,
 }
 
-Buffer :: enum {
-	// Special buffer for transfering data
-	transfer,
-
+ModelBuffer :: enum {
 	// model data buffers
-	model_triangles,
-	model_vertexes,
+	model_faces,
+	model_position,
 	model_normals,
 	model_texcoords,
 }
@@ -61,8 +74,7 @@ Engine :: struct {
 	window:                                 glfw.WindowHandle,
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
-	models:                                 [ModelTag]Model,
-	uniforms:                               Uniforms,
+	models:                                 [ModelTag]OBJ,
 
 	//
 	// Vulkan stuff
@@ -70,6 +82,11 @@ Engine :: struct {
 	vk_alloc:                               vk.AllocationCallbacks,
 	vk_messenger:                           vk.DebugUtilsMessengerEXT,
 	vk_instance:                            vk.Instance,
+
+	//
+	// Stuff for eye position
+	//
+	eye:                                    [3]f32,
 
 	//
 	// Physical and Logical device
@@ -97,8 +114,31 @@ Engine :: struct {
 	// Descriptor sets
 	//
 	vk_descriptor_pool:                     vk.DescriptorPool,
-	vk_descriptor_set_layout:               [FRAMES_IN_FLIGHT]vk.DescriptorSetLayout,
-	vk_descriptor_set:                      [FRAMES_IN_FLIGHT]vk.DescriptorSet,
+	vk_set_layout:                          vk.DescriptorSetLayout,
+	vk_descriptor_sets:                     [ModelTag]vk.DescriptorSet,
+
+	//
+	// Uniform Buffers
+	//
+	vk_uniform_buffers:                     [FRAMES_IN_FLIGHT]vk.Buffer,
+	vk_uniform_buffers_memory:              [FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	vk_uniform_buffers_mmapped:             [FRAMES_IN_FLIGHT]rawptr,
+
+	//
+	// Vertex Buffers
+	//
+	vk_transfer_buffer:                     vk.Buffer,
+	vk_transfer_buffer_memory:              vk.DeviceMemory,
+	vk_vertex_buffers:                      [ModelTag][ModelBuffer]vk.Buffer,
+	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
+
+	//
+	// Depth image
+	//
+	vk_depth_image_format:                  vk.Format,
+	vk_depth_image:                         vk.Image,
+	vk_depth_image_memory:                  vk.DeviceMemory,
+	vk_depth_image_view:                    vk.ImageView,
 
 	//
 	// Pipeline
@@ -110,11 +150,6 @@ Engine :: struct {
 	vk_color_attachment:                    vk.PipelineColorBlendAttachmentState,
 	vk_pipeline_dynamic_state:              [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
 	vk_pipeline_shader:                     vk.ShaderModule,
-	vk_uniform_buffers:                     [FRAMES_IN_FLIGHT]vk.Buffer,
-	vk_uniform_buffers_memory:              [FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	vk_uniform_buffers_mmapped:             [FRAMES_IN_FLIGHT]rawptr,
-	vk_vertex_buffers:                      [Buffer]vk.Buffer,
-	vk_vertex_buffers_memory:               [Buffer]vk.DeviceMemory,
 	vk_pipeline_layout:                     vk.PipelineLayout,
 
 	//
@@ -176,6 +211,7 @@ main :: proc() {
 		frame(&engine)
 
 		free_all(context.temp_allocator)
+		time.sleep(15 * time.Millisecond)
 	}
 }
 
@@ -260,6 +296,19 @@ frame :: proc(engine: ^Engine) {
 			dst_access = {.COLOR_ATTACHMENT_WRITE},
 			src_stage = {.COLOR_ATTACHMENT_OUTPUT},
 			dst_stage = {.COLOR_ATTACHMENT_OUTPUT},
+			aspect_mask = {.COLOR},
+		)
+
+		image_change_layout(
+			cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
+			image = engine.vk_depth_image,
+			old_layout = .UNDEFINED,
+			new_layout = .DEPTH_ATTACHMENT_OPTIMAL,
+			src_access = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+			dst_access = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+			src_stage = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+			dst_stage = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+			aspect_mask = {.DEPTH},
 		)
 
 		//
@@ -274,12 +323,13 @@ frame :: proc(engine: ^Engine) {
 			dst_access = {},
 			src_stage = {.COLOR_ATTACHMENT_OUTPUT},
 			dst_stage = {.BOTTOM_OF_PIPE},
+			aspect_mask = {.COLOR},
 		)
 
 		//
 		// Define a clear pass on the current swapchain image
 		//
-		attachment_info := vk.RenderingAttachmentInfo {
+		color_attachment_info := vk.RenderingAttachmentInfo {
 			sType = .RENDERING_ATTACHMENT_INFO,
 			imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
 			imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
@@ -288,6 +338,16 @@ frame :: proc(engine: ^Engine) {
 			clearValue = vk.ClearValue{color = {uint32 = {0x74, 0x16, 0x18, 0xff}}},
 		}
 
+		depth_attachment_info := vk.RenderingAttachmentInfo {
+			sType = .RENDERING_ATTACHMENT_INFO,
+			imageView = engine.vk_depth_image_view,
+			imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+			loadOp = .CLEAR,
+			storeOp = .STORE,
+			clearValue = vk.ClearValue{depthStencil = {depth = 1, stencil = 0}},
+		}
+
+
 		render_info := vk.RenderingInfo {
 			sType                = .RENDERING_INFO,
 			flags                = {},
@@ -295,8 +355,8 @@ frame :: proc(engine: ^Engine) {
 			layerCount           = 1,
 			viewMask             = 0,
 			colorAttachmentCount = 1,
-			pColorAttachments    = &attachment_info,
-			pDepthAttachment     = nil,
+			pColorAttachments    = &color_attachment_info,
+			pDepthAttachment     = &depth_attachment_info,
 			pStencilAttachment   = nil,
 		}
 
@@ -308,46 +368,6 @@ frame :: proc(engine: ^Engine) {
 			defer vk.CmdEndRendering(engine.vk_cmdbufs[engine.vk_frame_index])
 
 			//
-			// Update the uniform buffer
-			//
-
-			t := f32(time.tick_now()._nsec) * 1e-9
-			mouse_x, mouse_y := glfw.GetCursorPos(engine.window)
-			screen_x, screen_y := glfw.GetWindowSize(engine.window)
-			mouse_x = 2 * mouse_x / f64(screen_x) - 1; mouse_y = 2 * mouse_y / f64(screen_y) - 1
-
-			aspect :=
-				f32(engine.vk_swapchain_extent.width) / f32(engine.vk_swapchain_extent.height)
-
-			engine.uniforms = Uniforms {
-				screen_from_world = linalg.matrix4_perspective_f32(
-					fovy = linalg.to_radians(f32(45)),
-					aspect = aspect,
-					near = 0.1,
-					far = 10,
-					flip_z_axis = true,
-				),
-				world_from_model  = linalg.matrix4_look_at_f32(
-					eye = {2, 2, 2},
-					centre = {0, 0, 0},
-					up = {0, 0, 1},
-					flip_z_axis = true,
-				),
-				model_from_vertex = linalg.matrix4_rotate_f32(
-					t,
-					linalg.normalize([3]f32{t, -t, 1}),
-				),
-				__padding         = 0,
-				lightdir          = {1, 0, 1},
-			}
-
-			mem.copy_non_overlapping(
-				dst = engine.vk_uniform_buffers_mmapped[engine.vk_frame_index],
-				src = rawptr(&engine.uniforms),
-				len = size_of(engine.uniforms),
-			)
-
-			//
 			// Bind the uniform buffer
 			//
 			vk.CmdBindDescriptorSets(
@@ -356,9 +376,21 @@ frame :: proc(engine: ^Engine) {
 				layout = engine.vk_pipeline_layout,
 				firstSet = 0,
 				descriptorSetCount = 1,
-				pDescriptorSets = &engine.vk_descriptor_set[engine.vk_frame_index],
+				pDescriptorSets = &engine.vk_descriptor_sets[CURRENT_MODEL],
 				dynamicOffsetCount = 0,
 				pDynamicOffsets = nil,
+			)
+
+			//
+			// Update the uniform buffer
+			//
+
+			uniforms := engine_make_uniforms(engine)
+
+			mem.copy_non_overlapping(
+				dst = engine.vk_uniform_buffers_mmapped[engine.vk_frame_index],
+				src = rawptr(&uniforms),
+				len = size_of(uniforms),
 			)
 
 			//
@@ -375,7 +407,6 @@ frame :: proc(engine: ^Engine) {
 			//
 			// Bind vertex buffers
 			//
-
 			model := engine.models[CURRENT_MODEL]
 
 			pOffsets: vk.DeviceSize = 0
@@ -383,13 +414,13 @@ frame :: proc(engine: ^Engine) {
 				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 				firstBinding = 0,
 				bindingCount = 1,
-				pBuffers = &engine.vk_vertex_buffers[.model_vertexes],
+				pBuffers = &engine.vk_vertex_buffers[CURRENT_MODEL][.model_faces],
 				pOffsets = &pOffsets,
 			)
 
 			vk.CmdDraw(
 				engine.vk_cmdbufs[engine.vk_frame_index],
-				vertexCount = u32(len(model.vertexes)),
+				vertexCount = u32(len(model.attrib.faces)),
 				instanceCount = 1,
 				firstVertex = 0,
 				firstInstance = 0,
@@ -460,26 +491,60 @@ frame :: proc(engine: ^Engine) {
 	}
 }
 
+engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
+	//
+	// Engine setup uniforms
+	//
+
+	t := f32(time.tick_now()._nsec) * 1e-9
+	aspect :=
+		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
+
+	u = Uniforms {
+		screen_from_world = linalg.matrix4_perspective_f32(
+			fovy = linalg.to_radians(f32(45)),
+			aspect = aspect,
+			near = 0.1,
+			far = 10,
+			flip_z_axis = true,
+		),
+		world_from_model  = linalg.matrix4_look_at_f32(
+			eye = engine.eye,
+			centre = {0, 0, 0},
+			up = {0, 0, 1},
+			flip_z_axis = true,
+		),
+		model_from_vertex = linalg.matrix4_rotate_f32(t, {0, 0, 1}),
+		__padding         = 0,
+		lightdir          = linalg.normalize([3]f32{-1, -1, -1}),
+	}
+
+	return
+}
+
 engine_init :: proc(engine: ^Engine) {
 	g_logger = context.logger
 
 	result: vk.Result
 
 	//
-	// Load all the models in a multithreaded fashion
+	// Setup the default state to generate the uniforms
 	//
-	for &model, tag in engine.models {model.tag = tag}
+	engine.eye = {2, 2, 2}
 
-	model_load(&engine.models[CURRENT_MODEL])
+	engine.models[CURRENT_MODEL] = parse_obj_path(
+		MODEL_PATH[CURRENT_MODEL],
+		flags = {.triangulate},
+	)
 	// TODO:load other models
 
 	for model, tag in engine.models {
-		if len(model.vertexes) == 0 {continue}
+		if !model.success {continue}
 
-		fmt.eprintfln("{} vertexes = {}", tag, len(model.vertexes))
-		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
-		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
-		fmt.eprintfln("{} triangles = {}", tag, len(model.mesh_triangles))
+		fmt.eprintfln("{} faces = {}", tag, len(model.attrib.faces))
+		fmt.eprintfln("{} vertices = {}", tag, len(model.attrib.vertices))
+		fmt.eprintfln("{} normals = {}", tag, len(model.attrib.normals))
+		fmt.eprintfln("{} texcoords = {}", tag, len(model.attrib.texcoords))
 	}
 
 	//
@@ -496,6 +561,7 @@ engine_init :: proc(engine: ^Engine) {
 		ensure(engine.window != nil, "Failed to create a GLFW window")
 
 		glfw.SetWindowUserPointer(engine.window, engine)
+		glfw.SetKeyCallback(engine.window, callback_key)
 		glfw.SetFramebufferSizeCallback(engine.window, callback_framebuffer_size)
 		glfw.SetWindowIconifyCallback(engine.window, callback_window_minimize)
 	}
@@ -702,189 +768,6 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	ensure(result == .SUCCESS)
 
 	//
-	// Create the vertex buffers
-	//
-	properties: vk.PhysicalDeviceMemoryProperties
-	vk.GetPhysicalDeviceMemoryProperties(engine.vk_physical_device, &properties)
-
-
-	//
-	// Create the uniform buffers
-	//
-	for i in 0 ..< len(engine.vk_uniform_buffers) {
-		size := vk.DeviceSize(size_of(Uniforms))
-		usage := vk.BufferUsageFlags{.UNIFORM_BUFFER}
-		desired_properties := vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}
-
-		engine.vk_uniform_buffers[i], engine.vk_uniform_buffers_memory[i] = engine_create_buffer(
-			engine,
-			&properties,
-			size,
-			usage,
-			desired_properties,
-		)
-
-		//
-		// Map the uniform buffer so we don't need to remap it every frame
-		//
-		result = vk.MapMemory(
-			engine.vk_device,
-			engine.vk_uniform_buffers_memory[i],
-			offset = 0,
-			size = size_of(Uniforms),
-			flags = {},
-			ppData = &engine.vk_uniform_buffers_mmapped[i],
-		)
-		ensure(result == .SUCCESS)
-	}
-
-	for tag in Buffer {
-
-		size: vk.DeviceSize
-		usage: vk.BufferUsageFlags
-		desired_properties: vk.MemoryPropertyFlags
-
-		switch tag {
-
-		case .transfer:
-			size = 64 * mem.Megabyte
-			usage = {.TRANSFER_SRC}
-			desired_properties = {.HOST_VISIBLE, .HOST_COHERENT}
-
-		case .model_triangles:
-			size = MAX_TRIANGLES * size_of(triangle)
-			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
-			desired_properties = {.DEVICE_LOCAL}
-
-		case .model_vertexes:
-			size = MAX_VERTEXES * size_of(vertex)
-			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
-			desired_properties = {.DEVICE_LOCAL}
-
-		case .model_normals:
-			size = MAX_VERTEXES * size_of(normal)
-			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
-			desired_properties = {.DEVICE_LOCAL}
-
-		case .model_texcoords:
-			size = MAX_VERTEXES * size_of(texcoord)
-			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
-			desired_properties = {.DEVICE_LOCAL}
-		}
-
-		engine.vk_vertex_buffers[tag], engine.vk_vertex_buffers_memory[tag] = engine_create_buffer(
-			engine,
-			&properties,
-			size,
-			usage,
-			desired_properties,
-		)
-	}
-
-	//
-	// Fill the vertex buffers with data
-	//
-	// NOTE: I just upload the test data here
-	//
-	model := engine.models[CURRENT_MODEL]
-
-	//
-	// Map the transfer buffer into memory so we can write to it
-	//
-	transfer_buf_mmap: rawptr
-	result = vk.MapMemory(
-		engine.vk_device,
-		engine.vk_vertex_buffers_memory[.transfer],
-		offset = 0,
-		size = auto_cast vk.WHOLE_SIZE,
-		flags = {},
-		ppData = &transfer_buf_mmap,
-	)
-	ensure(result == .SUCCESS)
-
-	defer vk.UnmapMemory(engine.vk_device, engine.vk_vertex_buffers_memory[.transfer])
-
-	//
-	// Upload the data
-	//
-	upload_data_loop: for tag in Buffer {
-		bytes: []u8
-
-		switch tag {
-		case .transfer:
-		// nothing
-
-		case .model_triangles:
-			bytes = slice.to_bytes(model.mesh_triangles[:])
-
-		case .model_vertexes:
-			bytes = slice.to_bytes(model.vertexes[:])
-
-		case .model_normals:
-			bytes = slice.to_bytes(model.normals[:])
-
-		case .model_texcoords:
-			bytes = slice.to_bytes(model.texcoords[:])
-
-		}
-
-		if bytes == nil || len(bytes) == 0 {
-			continue upload_data_loop
-		}
-
-		//
-		// upload first to the staging buffer
-		//
-		mem.copy_non_overlapping(dst = transfer_buf_mmap, src = raw_data(bytes), len = len(bytes))
-
-		begin_info := vk.CommandBufferBeginInfo {
-			sType            = .COMMAND_BUFFER_BEGIN_INFO,
-			flags            = {.ONE_TIME_SUBMIT},
-			pInheritanceInfo = nil,
-		}
-
-		result = vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
-		ensure(result == .SUCCESS)
-
-		//
-		// The copy into our buffer. This involves submitting command via the
-		// command buffer.
-		//
-
-		region := vk.BufferCopy {
-			srcOffset = 0,
-			dstOffset = 0,
-			size      = auto_cast slice.size(bytes),
-		}
-
-		vk.CmdCopyBuffer(
-			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-			srcBuffer = engine.vk_vertex_buffers[.transfer],
-			dstBuffer = engine.vk_vertex_buffers[tag],
-			regionCount = 1,
-			pRegions = &region,
-		)
-
-		//
-		// Submit the commands
-		//
-
-		result = vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
-		ensure(result == .SUCCESS)
-
-		submit_info := vk.SubmitInfo {
-			sType              = .SUBMIT_INFO,
-			commandBufferCount = 1,
-			pCommandBuffers    = &engine.vk_cmdbufs[engine.vk_frame_index],
-		}
-
-		result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, fence = 0)
-		ensure(result == .SUCCESS)
-
-		vk.QueueWaitIdle(engine.vk_queue)
-	}
-
-	//
 	// For each stage that the shader defines, define the stage creation info
 	//
 	ensure(len(PIPELINE_STAGES) == len(PIPELINE_STAGE_NAMES))
@@ -936,25 +819,8 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	input_assembly_create_info := vk.PipelineInputAssemblyStateCreateInfo {
 		sType                  = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology               = .TRIANGLE_STRIP,
+		topology               = .TRIANGLE_LIST,
 		primitiveRestartEnable = false,
-	}
-
-	//
-	// Do the viewport creation
-	//
-	engine.vk_viewport = vk.Viewport {
-		x        = 0,
-		y        = 0,
-		width    = f32(engine.vk_swapchain_extent.width),
-		height   = f32(engine.vk_swapchain_extent.height),
-		minDepth = 0,
-		maxDepth = 1,
-	}
-
-	engine.vk_scissor = vk.Rect2D {
-		offset = {},
-		extent = engine.vk_swapchain_extent,
 	}
 
 	viewport_create_info := vk.PipelineViewportStateCreateInfo {
@@ -1017,94 +883,15 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	}
 
 	//
-	// Specify and create the descriptor pool for all buffers
+	// Create the vertex/uniform buffers
 	//
-	pool_sizes := [2]vk.DescriptorPoolSize {
-		{type = .UNIFORM_BUFFER, descriptorCount = len(engine.vk_uniform_buffers)},
-		{type = .STORAGE_BUFFER_DYNAMIC, descriptorCount = MODEL_STORAGE_BUFFER_COUNT},
-	}
-
-	pool_create_info := vk.DescriptorPoolCreateInfo {
-		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		flags         = {.FREE_DESCRIPTOR_SET},
-		maxSets       = 16,
-		poolSizeCount = len(pool_sizes),
-		pPoolSizes    = raw_data(&pool_sizes),
-	}
-
-	result = vk.CreateDescriptorPool(
-		engine.vk_device,
-		&pool_create_info,
-		&engine.vk_alloc,
-		&engine.vk_descriptor_pool,
-	)
-	ensure(result == .SUCCESS)
+	engine_init_buffers(engine)
 
 	//
-	// Specify and create the set layout for the uniform buffers
+	// Create the descriptor sets/set_layouts for all the models and the uniform
+	// buffer.
 	//
-	descriptor_set_layout_binding := vk.DescriptorSetLayoutBinding {
-		binding         = 0,
-		descriptorType  = .UNIFORM_BUFFER,
-		descriptorCount = 1,
-		stageFlags      = {.VERTEX},
-	}
-
-	descriptor_set_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
-		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		flags        = {},
-		bindingCount = 1,
-		pBindings    = &descriptor_set_layout_binding,
-	}
-
-	for &set_layout in engine.vk_descriptor_set_layout[:] {
-		result = vk.CreateDescriptorSetLayout(
-			engine.vk_device,
-			&descriptor_set_layout_create_info,
-			&engine.vk_alloc,
-			&set_layout,
-		)
-		ensure(result == .SUCCESS)
-	}
-
-	//
-	// Allocate the descriptor sets for the uniform buffers
-	//
-	descriptor_alloc_info := vk.DescriptorSetAllocateInfo {
-		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool     = engine.vk_descriptor_pool,
-		descriptorSetCount = len(engine.vk_descriptor_set_layout),
-		pSetLayouts        = raw_data(&engine.vk_descriptor_set_layout),
-	}
-
-	result = vk.AllocateDescriptorSets(
-		engine.vk_device,
-		&descriptor_alloc_info,
-		raw_data(&engine.vk_descriptor_set),
-	)
-	ensure(result == .SUCCESS)
-
-	//
-	// Configure the descriptor sets
-	//
-	for buf, i in engine.vk_uniform_buffers {
-		buf_info := vk.DescriptorBufferInfo {
-			buffer = buf,
-			offset = 0,
-			range  = size_of(Uniforms),
-		}
-		write_ds := vk.WriteDescriptorSet {
-			sType           = .WRITE_DESCRIPTOR_SET,
-			dstSet          = engine.vk_descriptor_set[i],
-			dstBinding      = 0,
-			dstArrayElement = 0,
-			descriptorCount = 1,
-			descriptorType  = .UNIFORM_BUFFER,
-			pBufferInfo     = &buf_info,
-		}
-
-		vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
-	}
+	engine_init_descriptor_set_layouts(engine)
 
 	//
 	// Define and create the pipeline layout
@@ -1113,8 +900,8 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
 
 		// set layouts
-		setLayoutCount         = len(engine.vk_descriptor_set_layout),
-		pSetLayouts            = raw_data(&engine.vk_descriptor_set_layout),
+		setLayoutCount         = 1,
+		pSetLayouts            = &engine.vk_set_layout,
 
 		// push constants
 		pushConstantRangeCount = 0,
@@ -1131,6 +918,23 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	ensure(engine.vk_pipeline_layout != {})
 
 	//
+	// Define the depth stencil state for the pipeline
+	//
+	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
+		sType                 = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		flags                 = {},
+		depthTestEnable       = true,
+		depthWriteEnable      = true,
+		depthCompareOp        = .LESS,
+		depthBoundsTestEnable = false,
+		stencilTestEnable     = false,
+		// front:                 StencilOpState,
+		// back:                  StencilOpState,
+		// minDepthBounds:        f32,
+		// maxDepthBounds:        f32,
+	}
+
+	//
 	// Define the rendering pipeline
 	//
 	render_create_info := vk.PipelineRenderingCreateInfo {
@@ -1140,11 +944,10 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		// surface.
 		colorAttachmentCount    = 1,
 		pColorAttachmentFormats = &engine.vk_swapchain_surface_format.format,
+		depthAttachmentFormat   = engine.vk_depth_image_format,
 		viewMask                = {}, // unused 2026-08-07
-		depthAttachmentFormat   = {}, // unused 2026-08-07
 		stencilAttachmentFormat = {}, // unused 2026-08-07
 	}
-
 
 	//
 	// Define the graphics pipeline layout struct
@@ -1180,7 +983,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		pViewportState      = &viewport_create_info,
 		pRasterizationState = &raster_create_info,
 		pMultisampleState   = &multisample_create_info,
-		pDepthStencilState  = nil,
+		pDepthStencilState  = &depth_stencil_state,
 		pColorBlendState    = &color_blend_create_info,
 		pDynamicState       = &dynamic_state_create_info,
 		layout              = engine.vk_pipeline_layout,
@@ -1206,6 +1009,335 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	ensure(result == .SUCCESS)
 }
 
+engine_init_buffers :: proc(engine: ^Engine) {
+	result: vk.Result
+
+	//
+	// Create the vertex buffers
+	//
+	properties: vk.PhysicalDeviceMemoryProperties
+	vk.GetPhysicalDeviceMemoryProperties(engine.vk_physical_device, &properties)
+
+	//
+	// Create the uniform buffers
+	//
+	for i in 0 ..< len(engine.vk_uniform_buffers) {
+		size := vk.DeviceSize(size_of(Uniforms))
+		usage := vk.BufferUsageFlags{.UNIFORM_BUFFER}
+		desired_properties := vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}
+
+		engine.vk_uniform_buffers[i], engine.vk_uniform_buffers_memory[i] = engine_create_buffer(
+			engine,
+			&properties,
+			size,
+			usage,
+			desired_properties,
+		)
+
+		//
+		// Map the uniform buffer so we don't need to remap it every frame
+		//
+		result = vk.MapMemory(
+			engine.vk_device,
+			engine.vk_uniform_buffers_memory[i],
+			offset = 0,
+			size = size_of(Uniforms),
+			flags = {},
+			ppData = &engine.vk_uniform_buffers_mmapped[i],
+		)
+		ensure(result == .SUCCESS)
+	}
+
+	//
+	// Create and map the transfer buffer
+	//
+
+	engine.vk_transfer_buffer, engine.vk_transfer_buffer_memory = engine_create_buffer(
+		engine,
+		&properties,
+		64 * mem.Megabyte,
+		{.TRANSFER_SRC},
+		{.HOST_VISIBLE, .HOST_COHERENT},
+	)
+
+	transfer_buf_mmap: rawptr
+	result = vk.MapMemory(
+		engine.vk_device,
+		engine.vk_transfer_buffer_memory,
+		offset = 0,
+		size = auto_cast vk.WHOLE_SIZE,
+		flags = {},
+		ppData = &transfer_buf_mmap,
+	)
+	ensure(result == .SUCCESS)
+
+	defer vk.UnmapMemory(engine.vk_device, engine.vk_transfer_buffer_memory)
+
+	//
+	// Fill the vertex buffers with data
+	//
+
+	for model_tag in ModelTag {
+		if !engine.models[model_tag].success {
+			log.warnf("Skipping {}", model_tag)
+			continue
+		}
+
+		for buffer_tag in ModelBuffer {
+			memory_to_upload: []byte
+			size: vk.DeviceSize
+			usage: vk.BufferUsageFlags
+			desired_properties: vk.MemoryPropertyFlags
+
+			switch buffer_tag {
+
+			case .model_faces:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.faces[:])
+				size = auto_cast slice.size(engine.models[model_tag].attrib.faces[:])
+				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+				desired_properties = {.DEVICE_LOCAL}
+
+			case .model_position:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.vertices[:])
+				size = auto_cast slice.size(engine.models[model_tag].attrib.vertices[:])
+				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
+				desired_properties = {.DEVICE_LOCAL}
+
+			case .model_normals:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.normals[:])
+				size = auto_cast slice.size(engine.models[model_tag].attrib.normals[:])
+				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
+				desired_properties = {.DEVICE_LOCAL}
+
+			case .model_texcoords:
+				memory_to_upload = slice.to_bytes(engine.models[model_tag].attrib.texcoords[:])
+				size = auto_cast slice.size(engine.models[model_tag].attrib.texcoords[:])
+				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
+				desired_properties = {.DEVICE_LOCAL}
+			}
+
+
+			if size == 0 {
+				ensure(len(memory_to_upload) == 0)
+				log.warnf("Skipping {}.{}", model_tag, buffer_tag)
+				continue
+			}
+
+			//
+			// Create the buffer
+			//
+			assert(len(memory_to_upload) > 0)
+			assert(int(size) == slice.size(memory_to_upload))
+
+			engine.vk_vertex_buffers[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
+				engine_create_buffer(engine, &properties, size, usage, desired_properties)
+
+
+			//
+			// upload first to the staging buffer
+			//
+			mem.copy_non_overlapping(
+				dst = transfer_buf_mmap,
+				src = raw_data(memory_to_upload),
+				len = slice.size(memory_to_upload),
+			)
+
+			//
+			// The copy into our buffer. This involves submitting command via the
+			// command buffer.
+			//
+
+			begin_info := vk.CommandBufferBeginInfo {
+					sType            = .COMMAND_BUFFER_BEGIN_INFO,
+					flags            = {.ONE_TIME_SUBMIT},
+					pInheritanceInfo = nil,
+				}
+
+			result = vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
+			ensure(result == .SUCCESS)
+
+			region := vk.BufferCopy {
+					srcOffset = 0,
+					dstOffset = 0,
+					size      = auto_cast slice.size(memory_to_upload),
+				}
+
+			vk.CmdCopyBuffer(
+				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+				srcBuffer = engine.vk_transfer_buffer,
+				dstBuffer = engine.vk_vertex_buffers[model_tag][buffer_tag],
+				regionCount = 1,
+				pRegions = &region,
+			)
+
+			//
+			// Submit the commands
+			//
+
+			result = vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
+			ensure(result == .SUCCESS)
+
+			submit_info := vk.SubmitInfo {
+					sType              = .SUBMIT_INFO,
+					commandBufferCount = 1,
+					pCommandBuffers    = &engine.vk_cmdbufs[engine.vk_frame_index],
+				}
+
+			result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, fence = 0)
+			ensure(result == .SUCCESS)
+
+			vk.QueueWaitIdle(engine.vk_queue)
+		}
+	}
+}
+
+engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
+	result: vk.Result
+
+	//
+	// Specify and create the descriptor pool for all buffers
+	//
+	pool_sizes := [2]vk.DescriptorPoolSize {
+		{type = .UNIFORM_BUFFER, descriptorCount = len(ModelTag) * len(ModelBuffer)},
+		{type = .STORAGE_BUFFER, descriptorCount = len(ModelTag) * len(ModelBuffer)},
+	}
+
+	pool_create_info := vk.DescriptorPoolCreateInfo {
+		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
+		flags         = {.FREE_DESCRIPTOR_SET},
+		maxSets       = 2 * len(ModelTag) * len(ModelBuffer),
+		poolSizeCount = len(pool_sizes),
+		pPoolSizes    = raw_data(&pool_sizes),
+	}
+
+	result = vk.CreateDescriptorPool(
+		engine.vk_device,
+		&pool_create_info,
+		&engine.vk_alloc,
+		&engine.vk_descriptor_pool,
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Specify and create the set layout
+	//
+	{
+		//
+		// Get the bindings from our handy shader processing tool
+		//
+		bindingCount: u32
+		pBindings: [^]vk.DescriptorSetLayoutBinding
+
+		when PIPELINE == .model_shader {
+			bindingCount = len(ModelShaderBinding)
+			pBindings = &MODEL_SHADER_PIPELINE_SET_LAYOUTS[ModelShaderBinding(0)]
+		} else when PIPELINE == .default {
+			bindingCount = len(DefaultBinding)
+			pBindings = &DEFAULT_PIPELINE_SET_LAYOUTS[DefaultBinding(0)]
+		} else {
+			#assert(false)
+		}
+
+		descriptor_set_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
+			sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			flags        = {},
+			bindingCount = bindingCount,
+			pBindings    = pBindings,
+		}
+
+		result = vk.CreateDescriptorSetLayout(
+			engine.vk_device,
+			&descriptor_set_layout_create_info,
+			&engine.vk_alloc,
+			&engine.vk_set_layout,
+		)
+		ensure(result == .SUCCESS)
+	}
+
+	//
+	// Temporarily dupe the layouts
+	//
+	set_layouts := make(
+		[]vk.DescriptorSetLayout,
+		len(engine.vk_descriptor_sets),
+		context.temp_allocator,
+	)
+	slice.fill(set_layouts, engine.vk_set_layout)
+
+	//
+	// Allocate the descriptor sets
+	//
+
+	descriptor_alloc_info := vk.DescriptorSetAllocateInfo {
+		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool     = engine.vk_descriptor_pool,
+		descriptorSetCount = len(engine.vk_descriptor_sets),
+		pSetLayouts        = raw_data(set_layouts),
+	}
+
+	result = vk.AllocateDescriptorSets(
+		engine.vk_device,
+		&descriptor_alloc_info,
+		&engine.vk_descriptor_sets[ModelTag(0)],
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Configure the descriptor sets for the uniform buffers
+	//
+	for dest_set, model_tag in engine.vk_descriptor_sets {
+
+		#assert(PIPELINE == .model_shader)
+		for binding, binding_tag in MODEL_SHADER_PIPELINE_SET_LAYOUTS {
+
+			//
+			// Define which buffer to bind to this descriptor set
+			//
+			buf_info := vk.DescriptorBufferInfo {
+				buffer = 0,
+				offset = 0,
+				range  = vk.DeviceSize(vk.WHOLE_SIZE),
+			}
+
+			switch binding_tag {
+
+			case .uniforms:
+				// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
+				buf_info.buffer = engine.vk_uniform_buffers[0]
+
+			case .buf_pos:
+				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_position]
+
+			case .buf_normal:
+				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_normals]
+
+			case .buf_texcoord:
+				buf_info.buffer = engine.vk_vertex_buffers[model_tag][.model_texcoords]
+
+			}
+
+
+			//
+			// If the buffer we are binding is nil, continue the loop
+			//
+			if buf_info.buffer == 0 {
+				continue
+			}
+
+			write_ds := vk.WriteDescriptorSet {
+				sType           = .WRITE_DESCRIPTOR_SET,
+				dstSet          = dest_set,
+				dstBinding      = binding.binding,
+				dstArrayElement = 0,
+				descriptorCount = binding.descriptorCount,
+				descriptorType  = binding.descriptorType,
+				pBufferInfo     = &buf_info,
+			}
+
+			vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
+		}
+	}
+}
 
 engine_init_command_buffers :: proc(engine: ^Engine) {
 	result: vk.Result
@@ -1466,33 +1598,6 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	ensure(engine.vk_queue != nil)
 }
 
-engine_recreate_swapchain :: proc(engine: ^Engine) {
-	//
-	// Handle the case when the application is minimized
-	//
-	w, h: i32
-	for w == 0 || h == 0 {
-		w, h = glfw.GetFramebufferSize(engine.window)
-		glfw.WaitEvents()
-	}
-
-	//
-	// We want to destroy the current swapchain before creating a new one
-	//
-	assert(engine.vk_swapchain != 0)
-	vk.DeviceWaitIdle(engine.vk_device)
-
-	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
-	engine.vk_swapchain = 0
-
-	for image_view in engine.vk_swapchain_image_views {
-		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
-	}
-	clear(&engine.vk_swapchain_image_views)
-
-	engine_init_swapchain(engine)
-}
-
 engine_init_swapchain :: proc(engine: ^Engine) {
 	result: vk.Result
 
@@ -1578,7 +1683,6 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 
 		if slice.contains(present_modes, vk.PresentModeKHR.MAILBOX) {
 			present_mode = .MAILBOX
-			present_mode = .FIFO
 		} else {
 			present_mode = .FIFO
 		}
@@ -1635,6 +1739,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 			capabilities.maxImageExtent.height,
 		)
 	}
+
 
 	create_info := vk.SwapchainCreateInfoKHR {
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
@@ -1714,31 +1819,197 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		)
 		ensure(result == .SUCCESS)
 	}
+
+	//
+	// Create viewport and scissor
+	//
+	engine.vk_viewport = vk.Viewport {
+		x        = 0,
+		y        = 0,
+		width    = f32(engine.vk_swapchain_extent.width),
+		height   = f32(engine.vk_swapchain_extent.height),
+		minDepth = 0,
+		maxDepth = 1,
+	}
+
+	engine.vk_scissor = vk.Rect2D {
+		offset = {},
+		extent = engine.vk_swapchain_extent,
+	}
+
+	//
+	// Create the depth image
+	//
+
+	engine.vk_depth_image_format = find_format(
+		engine,
+		candidates = {.D32_SFLOAT, .D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT},
+		tiling = .OPTIMAL,
+		features = {.DEPTH_STENCIL_ATTACHMENT},
+	)
+
+	image_create_info := vk.ImageCreateInfo {
+		sType = .IMAGE_CREATE_INFO,
+		flags = {},
+		imageType = .D2,
+		format = engine.vk_depth_image_format,
+		extent = {
+			width = engine.vk_swapchain_extent.width,
+			height = engine.vk_swapchain_extent.height,
+			depth = 1,
+		},
+		mipLevels = 1,
+		arrayLayers = 1,
+		samples = {._1},
+		tiling = .OPTIMAL,
+		usage = {.DEPTH_STENCIL_ATTACHMENT},
+		sharingMode = .EXCLUSIVE,
+		queueFamilyIndexCount = 0,
+		pQueueFamilyIndices = nil,
+		initialLayout = .UNDEFINED,
+	}
+
+	result = vk.CreateImage(
+		engine.vk_device,
+		&image_create_info,
+		&engine.vk_alloc,
+		&engine.vk_depth_image,
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Allocate the image
+	//
+	properties: vk.PhysicalDeviceMemoryProperties
+	vk.GetPhysicalDeviceMemoryProperties(engine.vk_physical_device, &properties)
+
+	memory_requirements: vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(engine.vk_device, engine.vk_depth_image, &memory_requirements)
+
+	memory_type_index := device_get_buffer_memory_type(
+		&properties,
+		memory_requirements,
+		{.DEVICE_LOCAL},
+	)
+
+	alloc_info := vk.MemoryAllocateInfo {
+		sType           = .MEMORY_ALLOCATE_INFO,
+		allocationSize  = memory_requirements.size,
+		memoryTypeIndex = memory_type_index,
+	}
+	result = vk.AllocateMemory(
+		engine.vk_device,
+		&alloc_info,
+		&engine.vk_alloc,
+		&engine.vk_depth_image_memory,
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Bind the image to the memory
+	//
+	result = vk.BindImageMemory(
+		engine.vk_device,
+		engine.vk_depth_image,
+		engine.vk_depth_image_memory,
+		0,
+	)
+	ensure(result == .SUCCESS)
+
+	//
+	// Create the depth image view
+	//
+	create_view_info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		flags = {},
+		image = engine.vk_depth_image,
+		viewType = .D2,
+		format = engine.vk_depth_image_format,
+		components = {.IDENTITY, .IDENTITY, .IDENTITY, .IDENTITY},
+		subresourceRange = {
+			aspectMask = {.DEPTH},
+			baseMipLevel = 0,
+			baseArrayLayer = 0,
+			levelCount = 1,
+			layerCount = 1,
+		},
+	}
+	result = vk.CreateImageView(
+		engine.vk_device,
+		&create_view_info,
+		&engine.vk_alloc,
+		&engine.vk_depth_image_view,
+	)
+	ensure(result == .SUCCESS)
 }
+
+engine_recreate_swapchain :: proc(engine: ^Engine) {
+	//
+	// Handle the case when the application is minimized
+	//
+	w, h: i32
+	for w == 0 || h == 0 {
+		w, h = glfw.GetFramebufferSize(engine.window)
+		glfw.WaitEvents()
+	}
+
+	//
+	// We want to destroy the current swapchain before creating a new one
+	//
+	assert(engine.vk_swapchain != 0)
+	vk.DeviceWaitIdle(engine.vk_device)
+
+	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
+	engine.vk_swapchain = 0
+
+	for image_view in engine.vk_swapchain_image_views {
+		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
+	}
+	clear(&engine.vk_swapchain_image_views)
+
+	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, &engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, &engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
+
+	engine_init_swapchain(engine)
+}
+
 
 engine_destroy :: proc(engine: ^Engine) {
 	vk.DeviceWaitIdle(engine.vk_device)
 
-	for layout in engine.vk_descriptor_set_layout {
-		vk.DestroyDescriptorSetLayout(engine.vk_device, layout, &engine.vk_alloc)
-	}
+	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, &engine.vk_alloc)
+	vk.DestroyBuffer(engine.vk_device, engine.vk_transfer_buffer, &engine.vk_alloc)
+
+
+	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, &engine.vk_alloc)
+
+	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, &engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, &engine.vk_alloc)
+
+	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, &engine.vk_alloc)
 
 	for mem in engine.vk_uniform_buffers_memory {
 		vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
 	}
-	for mem in engine.vk_vertex_buffers_memory {
-		vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
+	for buffer_mem_slice in engine.vk_vertex_buffers_memory {
+		for mem in buffer_mem_slice {
+			vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
+		}
 	}
 
 	for buffer in engine.vk_uniform_buffers {
 		vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
 	}
-	for buffer in engine.vk_vertex_buffers {
-		vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
+	for model_buffers in engine.vk_vertex_buffers {
+		for buffer in model_buffers {
+			vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
+		}
 	}
 
 	for &model in engine.models {
-		model_destroy(&model)
+		obj_destroy(&model)
 	}
 
 	for sema in engine.vk_swapchain_semas {
