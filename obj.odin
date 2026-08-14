@@ -132,12 +132,6 @@ model_normalize_indicies :: proc(m: ^Model) {
 	}
 }
 
-model_dedup_values :: proc(m: ^Model) {
-	//
-	// TODO: dedup data
-	//
-}
-
 // odinfmt: disable
 model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
     // Always append some default values
@@ -168,8 +162,6 @@ model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
 	}
 
     model_normalize_indicies(m)
-
-    model_dedup_values(m)
 
 	ok = true
 	return

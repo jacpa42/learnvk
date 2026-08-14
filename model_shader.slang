@@ -40,13 +40,13 @@ VertexOutput vertex(
             buf_normal[vertex.normal * 3 + 2]
     );
     float2 texcoord = float2(
-            buf_texcoord[vertex.texcoord * 3],
-            buf_texcoord[vertex.texcoord * 3 + 1],
+            buf_texcoord[vertex.texcoord * 2],
+            buf_texcoord[vertex.texcoord * 2 + 1],
     );
 
     VertexOutput output;
     output.pos = float4(pos, 1.0);
-    output.color = float4(texcoord, 1.0, 1.0);
+    output.color = float4(float3(max(dot(uniforms.lightdir, normal), 0.01)), 1.0);
 
     output.pos = mul(uniforms.model_from_vertex, output.pos);
     output.pos = mul(uniforms.world_from_model,  output.pos);

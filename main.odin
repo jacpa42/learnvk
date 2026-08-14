@@ -520,7 +520,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 			up = {0, 0, 1},
 			flip_z_axis = true,
 		),
-		model_from_vertex = linalg.matrix4_rotate_f32(t, {0, 0, 1}),
+		model_from_vertex = linalg.matrix4_rotate_f32(t, {1, 0, 1}),
 		__padding         = 0,
 		lightdir          = linalg.normalize([3]f32{-1, -1, -1}),
 	}
