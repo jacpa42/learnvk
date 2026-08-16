@@ -1,11 +1,12 @@
 package learnvk
 
 import "base:runtime"
-import "core:debug/trace"
 import "core:fmt"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
+import "core:os"
+import "core:path/filepath"
 import "core:slice"
 import "core:time"
 import "vendor:glfw"
@@ -19,9 +20,9 @@ import vk "vendor:vulkan"
 
 // TODO: Figure out why the dragon model does not render ...
 
-USE_IMGUI :: false
+CURRENT_MODEL := ModelTag.pinky
 PIPELINE :: Pipeline.model_shader
-CURRENT_MODEL :: ModelTag.bunny
+
 LINE_WIDTH: f32 : 1
 POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
@@ -37,6 +38,7 @@ MODEL_PATH := [ModelTag]string {
 	.bunny  = "assets/bunny/bunny.obj",
 	.dragon = "assets/dragon/dragon.obj",
 	.sponza = "assets/sponza/sponza.obj",
+	.pinky  = "assets/pinky/pinky.obj",
 }
 
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
@@ -48,7 +50,6 @@ MAX_DYNAMIC_STATE :: 90
 APP_NAME: cstring = "learnvk"
 
 g_logger: runtime.Logger
-g_trace: trace.Context
 
 ModelTag :: enum {
 	test,
@@ -56,6 +57,7 @@ ModelTag :: enum {
 	bmw,
 	dragon,
 	sponza,
+	pinky,
 }
 
 Uniforms :: struct #all_or_none #align (16) {
@@ -63,7 +65,6 @@ Uniforms :: struct #all_or_none #align (16) {
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
 	lightdir:          [3]f32,
-	__padding:         f32,
 }
 
 ModelBuffer :: enum {
@@ -91,7 +92,7 @@ Engine :: struct {
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
 	model_loaded:                           bit_set[ModelTag],
-	models:                                 [ModelTag]Model,
+	models:                                 [ModelTag]Bob,
 
 	//
 	// Vulkan stuff
@@ -201,14 +202,6 @@ main :: proc() {
 	}
 
 	//
-	// Setup stack trace
-	//
-	when ODIN_DEBUG {
-		context.assertion_failure_proc = assertion_failure_proc
-		assert(trace.init(&g_trace))
-	}
-
-	//
 	// Init engine
 	//
 	engine: Engine
@@ -253,21 +246,53 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Load the models we want to look at
 	//
-	model_load_ok: bool
-	model_load(&engine.models[CURRENT_MODEL], MODEL_PATH[CURRENT_MODEL], &model_load_ok)
-	assert(model_load_ok)
 
-	if model_load_ok do engine.model_loaded |= {CURRENT_MODEL}
+	temp_model: Model
+	for &model, tag in engine.models {
+
+		obj_path := MODEL_PATH[tag]
+		bob_path := fmt.tprintf("{}/{}.bob", filepath.dir(obj_path), filepath.stem(obj_path))
+
+		err: os.Error
+		model, err = bob_from_path(bob_path)
+		if err == nil {
+			engine.model_loaded |= {tag}
+			continue
+		}
+
+		log.warnf("Failed to load model, loading first from obj")
+		model_init_or_clear(&temp_model)
+
+		model_load_ok: bool
+		defer if model_load_ok {
+			engine.model_loaded |= {tag}
+		}
+
+		model_load(&temp_model, MODEL_PATH[tag], &model_load_ok)
+		assert(model_load_ok)
+
+		// write to bob
+		err = bob_write_from_model(&temp_model, bob_path)
+		if err != nil {
+			log.errorf("Failed to write bob file \"{}\": {}", bob_path, err)
+			model_load_ok = false
+			continue
+		}
+
+		model, err = bob_from_path(bob_path)
+		if err != nil {
+			log.errorf("Failed to load \"{}\": {}", bob_path, err)
+			model_load_ok = false
+			continue
+		}
+	}
+
+	model_destroy(&temp_model)
 
 	for tag in engine.model_loaded {
 		model := engine.models[tag]
-
-		fmt.eprintfln("{} faces = {}", tag, len(model.faces))
-		fmt.eprintfln("{} vertices = {}", tag, len(model.vertices))
-		fmt.eprintfln("{} normals = {}", tag, len(model.normals))
-		fmt.eprintfln("{} texcoords = {}", tag, len(model.texcoords))
+		fmt.eprintfln("{} :: %#v", tag, bob_header(model))
 	}
-
 
 	//
 	// Initialize GLFW and create our window
@@ -805,6 +830,7 @@ engine_init_buffers :: proc(engine: ^Engine) {
 	//
 
 	for model_tag in engine.model_loaded {
+		model := engine.models[model_tag]
 		for buffer_tag in ModelBuffer {
 			memory_to_upload: []byte
 			size: vk.DeviceSize
@@ -814,26 +840,26 @@ engine_init_buffers :: proc(engine: ^Engine) {
 			switch buffer_tag {
 
 			case .model_points:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].faces[:])
-				size = auto_cast slice.size(engine.models[model_tag].faces[:])
+				memory_to_upload = bob_face_bytes(model)
+				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_vertices:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].vertices[:])
-				size = auto_cast slice.size(engine.models[model_tag].vertices[:])
+				memory_to_upload = bob_vertex_bytes(model)
+				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_normals:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].normals[:])
-				size = auto_cast slice.size(engine.models[model_tag].normals[:])
+				memory_to_upload = bob_normal_bytes(model)
+				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_texcoords:
-				memory_to_upload = slice.to_bytes(engine.models[model_tag].texcoords[:])
-				size = auto_cast slice.size(engine.models[model_tag].texcoords[:])
+				memory_to_upload = bob_texcoord_bytes(model)
+				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 			}
@@ -1202,7 +1228,7 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 			break search_device
 		}
 	}
-	ensure(engine.vk_physical_device != 0)
+	ensure(engine.vk_physical_device != nil)
 }
 
 engine_init_logical_device :: proc(engine: ^Engine) {
@@ -1696,7 +1722,6 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 
 	engine_init_swapchain(engine)
 }
-
 
 engine_destroy :: proc(engine: ^Engine) {
 	vk.DeviceWaitIdle(engine.vk_device)

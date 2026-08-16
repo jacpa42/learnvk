@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:math/bits"
 import "core:os"
 import "core:path/filepath"
+import "core:simd"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -55,7 +56,7 @@ ParsedFace :: struct {
 	},
 }
 
-model_init :: proc(m: ^Model) {
+model_init_or_clear :: proc(m: ^Model) {
 	assert(m != nil)
 	make_or_clear(&m.vertices)
 	make_or_clear(&m.normals)
@@ -65,7 +66,12 @@ model_init :: proc(m: ^Model) {
 	make_or_clear(&m.meshes)
 }
 
-model_destroy :: proc(m: ^Model) {
+model_destroy :: proc {
+	model_destroy_model,
+	bob_destroy,
+}
+
+model_destroy_model :: proc(m: ^Model) {
 	defer m^ = {}
 	delete(m.meshes)
 	delete(m.vertices)
@@ -108,6 +114,24 @@ model_load_obj_path :: proc(m: ^Model, path: string, ok: ^bool = nil) {
 	return
 }
 
+model_get_bounding_box :: proc(m: ^Model) -> (corner, size: [3]f32) {
+	i: int
+	min, max: #simd[4]f32
+
+	for i < len(m.vertices) {
+		defer i += 3
+
+		vec := #simd[4]f32{m.vertices[i + 0], m.vertices[i + 1], m.vertices[i + 2], 0}
+
+		min = simd.min(min, vec)
+		max = simd.max(max, vec)
+	}
+
+	corner = simd.to_array(min).xyz
+	size = simd.to_array(max - min).xyz
+	return
+}
+
 model_normalize_indicies :: proc(m: ^Model) {
 	SIGN_BIT :: 0x80000000
 
@@ -123,6 +147,7 @@ model_normalize_indicies :: proc(m: ^Model) {
 
 // odinfmt: disable
 model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
+
     // Always append some default values
     model_append(m, Vertex{})
     model_append(m, Normal{})
@@ -134,6 +159,8 @@ model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
 
         prefix := (u16(line[0])<<8) | u16(line[1])
 
+        noprefix := strings.trim(line, "fvnt ")
+
         VERTEX   :: ('v' << 8) | ' '
         NORMAL   :: ('v' << 8) | 'n'
         TEXCOORD :: ('v' << 8) | 't'
@@ -141,10 +168,10 @@ model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
         MESH     :: ('g' << 8) | ' '
 
 		switch prefix {
-		case VERTEX:   model_append(m, parse_vertex_pos(line) or_return)
-		case NORMAL:   model_append(m, parse_vertex_normal(line) or_return)
-		case TEXCOORD: model_append(m, parse_vertex_texcoord(line) or_return)
-		case FACE:     model_append(m, parse_face(line) or_return)
+		case VERTEX:   model_append(m, parse_vertex_pos(noprefix) or_return)
+		case NORMAL:   model_append(m, parse_vertex_normal(noprefix) or_return)
+		case TEXCOORD: model_append(m, parse_vertex_texcoord(noprefix) or_return)
+		case FACE:     model_append(m, parse_face(noprefix) or_return)
 		case MESH:     model_append(m, line[2:])
 		case:          continue
 		}
@@ -157,9 +184,21 @@ model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
 }
 // odinfmt: enable
 
-model_get_num_points :: proc(m: Model) -> u32 {
+model_get_num_points :: proc {
+	model_get_num_points_obj,
+	model_get_num_points_bob,
+}
+
+
+model_get_num_points_obj :: proc(m: Model) -> u32 {
 	return u32(slice.size(m.faces[:]) / size_of(UnsignedPoint))
 }
+
+model_get_num_points_bob :: proc(bob: Bob) -> u32 {
+	faces := bob_faces(bob)
+	return u32(slice.size(faces) / size_of(UnsignedPoint))
+}
+
 
 model_get_all_points :: proc(m: Model) -> []UnsignedPoint {
 	len := len(m.faces) / len(Face)
@@ -228,26 +267,23 @@ model_append_normal :: proc(m: ^Model, n: Normal) {append(&m.normals, n[0], n[1]
 model_append_texcoord :: proc(m: ^Model, t: TexCoord) {append(&m.texcoords, t[0], t[1])}
 
 parse_vertex_pos :: #force_inline proc(line: string) -> (v: Vertex, ok: bool) {
-	assert(strings.starts_with(line, "v  "))
 	return parse_vector(Vertex, line)
 }
 
 parse_vertex_normal :: #force_inline proc(line: string) -> (v: Normal, ok: bool) {
-	assert(strings.starts_with(line, "vn "))
 	return parse_vector(Normal, line)
 }
 
 parse_vertex_texcoord :: #force_inline proc(line: string) -> (v: TexCoord, ok: bool) {
-	assert(strings.starts_with(line, "vt "))
 	return parse_vector(TexCoord, line)
 }
 
 @(private = "file")
 parse_vector :: proc($T: typeid, line: string) -> (vertex: T, ok: bool) {
-	assert(len(line) > 3)
+	assert(len(line) >= 5)
 
 	i := 0
-	s := line[3:]
+	s := line
 
 	for part in strings.split_by_byte_iterator(&s, ' ') {
 		defer i += 1
@@ -272,7 +308,7 @@ parse_vector :: proc($T: typeid, line: string) -> (vertex: T, ok: bool) {
 parse_face :: proc(line: string) -> (face: ParsedFace, ok: bool) {
 	assert(len(line) > 4)
 
-	s := transmute([]byte)(line[2:])
+	s := transmute([]byte)(line)
 	sign: i32 = 1
 
 	idx: PointIndex

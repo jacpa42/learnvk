@@ -168,6 +168,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Bind the uniform buffer
 	//
+
 	vk.CmdBindDescriptorSets(
 		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 		pipelineBindPoint = .GRAPHICS,
@@ -324,10 +325,22 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 	//
 
 	t := f32(glfw.GetTime())
+
 	aspect :=
 		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
 
 	view_direction := camera_view_dir(&engine.camera)
+
+	corner := bob_header(engine.models[CURRENT_MODEL]).corner
+	size := bob_header(engine.models[CURRENT_MODEL]).size
+
+	model_from_vertex :=
+		linalg.matrix4_scale_f32(
+			{1.0 / max(size.x, 0.001), 1.0 / max(size.y, 0.001), 1.0 / max(size.z, 0.001)},
+		) *
+		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
+		linalg.matrix4_rotate_f32(t, {1, 1, 0})
+
 
 	u = Uniforms {
 		screen_from_world = linalg.matrix4_perspective_f32(
@@ -341,9 +354,8 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 			centre = engine.camera.pos + view_direction,
 			up = engine.camera.up,
 		),
-		model_from_vertex = linalg.matrix4_rotate_f32(math.to_radians_f32(180), {0, 0, 1}),
-		__padding         = 0,
-		lightdir          = [3]f32{math.sin(t), math.cos(t), 0},
+		model_from_vertex = model_from_vertex,
+		lightdir          = linalg.normalize([3]f32{1, 1, 1}),
 	}
 
 	return

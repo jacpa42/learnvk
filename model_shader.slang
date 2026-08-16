@@ -14,10 +14,13 @@ struct UniformBuffer {
     float4x4 world_from_model;
     float4x4 model_from_vertex;
     float3   lightdir;
-    float    __padding;
 };
 
-static float3 BASE_COLOR = float3(0.33333333333333331, 0.4, 0.46666666666666667);
+static float3 BASE_COLOR = float3(
+    0.37254901960784315,
+    0.47843137254901963,
+    0.58431372549019611,
+);
 
 ConstantBuffer<UniformBuffer> uniforms;
 
@@ -34,12 +37,13 @@ VertexOutput vertex(
     float3 pos = float3(
             buf_pos[vertex.pos * 3],
             buf_pos[vertex.pos * 3 + 1],
-            buf_pos[vertex.pos * 3 + 2]
+            buf_pos[vertex.pos * 3 + 2],
     );
-    float3 normal = float3(
+    float4 normal = float4(
             buf_normal[vertex.normal * 3],
             buf_normal[vertex.normal * 3 + 1],
-            buf_normal[vertex.normal * 3 + 2]
+            buf_normal[vertex.normal * 3 + 2],
+            1.0,
     );
     float2 texcoord = float2(
             buf_texcoord[vertex.texcoord * 2],
@@ -47,12 +51,17 @@ VertexOutput vertex(
     );
 
     VertexOutput output;
-    output.pos = float4(pos, 1.0);
-    output.color = float4(BASE_COLOR * float3(max(dot(uniforms.lightdir, normal), 0.05)), 1.0);
 
+    output.pos = float4(pos, 1.0);
     output.pos = mul(uniforms.model_from_vertex, output.pos);
     output.pos = mul(uniforms.world_from_model,  output.pos);
     output.pos = mul(uniforms.screen_from_world, output.pos);
+
+    // normal = mul(uniforms.model_from_vertex, normal);
+    // normal = mul(uniforms.world_from_model,  normal);
+    // normal = mul(uniforms.screen_from_world, normal);
+
+    output.color = float4(BASE_COLOR * max(dot(uniforms.lightdir, normal.xyz), 0.05), 1.0);
 
     return output;
 }
