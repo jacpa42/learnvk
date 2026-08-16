@@ -1165,39 +1165,44 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 		log.errorf("No gpu found. Cannot continue.")
 		ensure(false)
 
-	case:
-		log.infof("Found a bunch ({}) of gpus, using first one.", len(devices))
-		fallthrough
 	case 1:
-		engine.vk_physical_device = devices[0]
+	// nothing
+
+	case:
+		log.info("Found a bunch of gpus, using first one that meets the requirements")
 	}
 
-	ensure(engine.vk_physical_device != nil)
-	vk.GetPhysicalDeviceProperties(
-		engine.vk_physical_device,
-		&engine.vk_physical_device_properties,
-	)
-	vk.GetPhysicalDeviceFeatures(engine.vk_physical_device, &engine.vk_physical_device_features)
+	search_device: for physical_device in devices {
+		ensure(physical_device != nil)
 
-	//
-	// Define the features we need for our application to run
-	//
-	exts := &engine.vk_physical_device_required_extensions
-	append(exts, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
-	append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
-	append(exts, vk.KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME)
-	append(exts, vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
-	append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
+		vk.GetPhysicalDeviceProperties(physical_device, &engine.vk_physical_device_properties)
+		vk.GetPhysicalDeviceFeatures(physical_device, &engine.vk_physical_device_features)
+
+		log.info("Checking", transmute(cstring)(&engine.vk_physical_device_properties.deviceName))
+
+		//
+		// Define the features we need for our application to run
+		//
+		exts := &engine.vk_physical_device_required_extensions
+		append(exts, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
+		append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
+		append(exts, vk.KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME)
+		append(exts, vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
+		append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
 
 
-	ensure(
-		device_meets_requirements(
-			engine.vk_physical_device,
+		if device_meets_requirements(
+			physical_device,
 			engine.vk_physical_device_properties,
 			engine.vk_physical_device_features,
 			engine.vk_physical_device_required_extensions[:],
-		),
-	)
+		) {
+			log.info("Using", transmute(cstring)(&engine.vk_physical_device_properties.deviceName))
+			engine.vk_physical_device = physical_device
+			break search_device
+		}
+	}
+	ensure(engine.vk_physical_device != 0)
 }
 
 engine_init_logical_device :: proc(engine: ^Engine) {
