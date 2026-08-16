@@ -3,6 +3,7 @@ package learnvk
 import "base:runtime"
 import "core:debug/trace"
 import "core:log"
+import "core:math"
 import "core:mem"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -231,17 +232,60 @@ glfw_error_callback :: proc "c" (error: i32, description: cstring) {
 	log.errorf("GLFW [%d]: %s", error, description)
 }
 
+// odinfmt: disable
 callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
 	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
 
-	if key == glfw.KEY_A && action == glfw.PRESS {
-		engine.eye -= 0.4
-	}
+    activate := action != glfw.RELEASE
+	switch key {
 
-	if key == glfw.KEY_S && action == glfw.PRESS {
-		engine.eye += 0.4
-	}
+	case glfw.KEY_ESCAPE:
+		glfw.SetWindowShouldClose(window, true)
 
+	case glfw.KEY_W:
+		if  activate do engine.actions += {.forward}
+		if !activate do engine.actions -= {.forward}
+
+	case glfw.KEY_S:
+		if  activate do engine.actions += {.backward}
+		if !activate do engine.actions -= {.backward}
+
+	case glfw.KEY_A:
+		if  activate do engine.actions += {.left}
+		if !activate do engine.actions -= {.left}
+
+	case glfw.KEY_D:
+		if  activate do engine.actions += {.right}
+		if !activate do engine.actions -= {.right}
+
+	case glfw.KEY_K:
+		if  activate do engine.actions += {.up}
+		if !activate do engine.actions -= {.up}
+
+	case glfw.KEY_J:
+		if  activate do engine.actions += {.down}
+		if !activate do engine.actions -= {.down}
+	}
+}
+// odinfmt: enable
+
+callback_scroll :: proc "c" (window: glfw.WindowHandle, xoffset, yoffset: f64) {}
+
+callback_cursor_move :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
+	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
+
+	w, h := glfw.GetFramebufferSize(window)
+	if w <= 0 || h <= 0 do return
+
+	delta := engine.camera.sensitivity * [2]f32{f32(-xpos), f32(ypos)}
+	glfw.SetCursorPos(window, 0, 0)
+
+	engine.camera.yaw -= delta.x
+	engine.camera.pitch = clamp(
+		engine.camera.pitch + delta.y,
+		math.to_radians_f32(-89.0),
+		math.to_radians_f32(89.0),
+	)
 }
 
 callback_framebuffer_size :: proc "c" (window: glfw.WindowHandle, width, height: i32) {

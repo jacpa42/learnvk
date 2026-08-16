@@ -17,6 +17,8 @@ struct UniformBuffer {
     float    __padding;
 };
 
+static float3 BASE_COLOR = float3(0.33333333333333331, 0.4, 0.46666666666666667);
+
 ConstantBuffer<UniformBuffer> uniforms;
 
 // The buffers which contain our model data
@@ -46,7 +48,7 @@ VertexOutput vertex(
 
     VertexOutput output;
     output.pos = float4(pos, 1.0);
-    output.color = float4(float3(max(dot(uniforms.lightdir, normal), 0.01)), 1.0);
+    output.color = float4(BASE_COLOR * float3(max(dot(uniforms.lightdir, normal), 0.05)), 1.0);
 
     output.pos = mul(uniforms.model_from_vertex, output.pos);
     output.pos = mul(uniforms.world_from_model,  output.pos);

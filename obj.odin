@@ -108,26 +108,15 @@ model_load_obj_path :: proc(m: ^Model, path: string, ok: ^bool = nil) {
 	return
 }
 
-// TODO: simd this bitch should go
 model_normalize_indicies :: proc(m: ^Model) {
-	for &face in m.faces {
-		for &point in face {
-			for &index, tag in point {
+	SIGN_BIT :: 0x80000000
 
-				count: u32
-				switch tag {
-				case .vertex:
-					count = u32(len(m.vertices))
-				case .texcoord:
-					count = u32(len(m.texcoords))
-				case .normal:
-					count = u32(len(m.normals))
-				}
+	lengths := [3]u32{u32(len(m.vertices)), u32(len(m.texcoords)), u32(len(m.normals))}
+	points := ([^]u32)(raw_data(m.faces))[:slice.size(m.faces[:]) / size_of(u32)]
 
-				if transmute(i32)(transmute(f32)(index)) < 0 {
-					index += count
-				}
-			}
+	for &point, i in points[:] {
+		if point >= SIGN_BIT {
+			point += lengths[i % 3]
 		}
 	}
 }
@@ -310,9 +299,10 @@ parse_face :: proc(line: string) -> (face: ParsedFace, ok: bool) {
 
 	when ENABLE_DEBUG_PRINTING {
 		indices := (([^]i32)(&face.points.signed[0]))[:face.points_len * 3]
-		fmt.eprintfln("took in \"{}\"->{}", line, indices)
+		fmt.eprintfln("\"{}\"->{}", line, indices)
 	}
 
 	ok = true
 	return
+
 }
