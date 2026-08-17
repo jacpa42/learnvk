@@ -243,6 +243,7 @@ append_vertex_input_description :: proc(
 		shader_struct_name := make_shader_struct_variant(vs.shader_path)
 		shader_enum_name_upper := make_shader_enum_variant_upper(vs.shader_path)
 
+		append(o, "//\n//You might need to put the sampler for some of these descriptors!\n//\n")
 		append(
 			o,
 			fmt.tprintf(
@@ -253,7 +254,6 @@ append_vertex_input_description :: proc(
 		)
 
 		for param in vs.params {
-
 			// Add a comment about where this layout is coming from
 			append(o, "\t.")
 			append(o, param.name)
@@ -302,15 +302,7 @@ append_vertex_input_description :: proc(
 }
 
 shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.ShaderStageFlags {
-	switch shader_param.type.kind {
-	case .constantBuffer:
-		return {.VERTEX}
-	case .resource:
-		return {.VERTEX}
-	}
-
-	assert(false)
-	return {}
+	return vulkan.ShaderStageFlags_ALL_GRAPHICS
 }
 
 shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulkan.DescriptorType {
@@ -318,7 +310,14 @@ shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulka
 	case .constantBuffer:
 		return .UNIFORM_BUFFER
 	case .resource:
-		return .STORAGE_BUFFER
+		switch shader_param.type.baseShape {
+		case .none:
+			unreachable()
+		case .texture2D:
+			return .COMBINED_IMAGE_SAMPLER
+		case .structuredBuffer:
+			return .STORAGE_BUFFER
+		}
 	}
 
 	assert(false)

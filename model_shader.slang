@@ -6,7 +6,8 @@ struct Vertex {
 
 struct VertexOutput {
     float4 pos : SV_Position;
-    float4 color;
+    float3 color;
+    uint texcoord;
 };
 
 struct UniformBuffer {
@@ -16,15 +17,10 @@ struct UniformBuffer {
     float3   lightdir;
 };
 
-static float3 BASE_COLOR = float3(
-    0.37254901960784315,
-    0.47843137254901963,
-    0.58431372549019611,
-);
-
 ConstantBuffer<UniformBuffer> uniforms;
 
-// The buffers which contain our model data
+// The buffers which contain our model/texture data
+Sampler2D texture;
 StructuredBuffer<float> buf_pos;
 StructuredBuffer<float> buf_normal;
 StructuredBuffer<float> buf_texcoord;
@@ -35,19 +31,14 @@ VertexOutput vertex(
     uint instanceID : SV_InstanceID
 ) {
     float3 pos = float3(
-            buf_pos[vertex.pos * 3],
-            buf_pos[vertex.pos * 3 + 1],
-            buf_pos[vertex.pos * 3 + 2],
+        buf_pos[vertex.pos * 3],
+        buf_pos[vertex.pos * 3 + 1],
+        buf_pos[vertex.pos * 3 + 2],
     );
-    float4 normal = float4(
-            buf_normal[vertex.normal * 3],
-            buf_normal[vertex.normal * 3 + 1],
-            buf_normal[vertex.normal * 3 + 2],
-            1.0,
-    );
-    float2 texcoord = float2(
-            buf_texcoord[vertex.texcoord * 2],
-            buf_texcoord[vertex.texcoord * 2 + 1],
+    float3 normal = float3(
+        buf_normal[vertex.normal * 3],
+        buf_normal[vertex.normal * 3 + 1],
+        buf_normal[vertex.normal * 3 + 2],
     );
 
     VertexOutput output;
@@ -61,12 +52,39 @@ VertexOutput vertex(
     // normal = mul(uniforms.world_from_model,  normal);
     // normal = mul(uniforms.screen_from_world, normal);
 
-    output.color = float4(BASE_COLOR * max(dot(uniforms.lightdir, normal.xyz), 0.05), 1.0);
+    output.color = max(dot(uniforms.lightdir, normal), 0.05);
+    output.texcoord = vertex.texcoord;
 
     return output;
 }
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    return input.color;
+    float2 texcoord = float2(
+        buf_texcoord[input.texcoord * 2],
+        buf_texcoord[input.texcoord * 2 + 1],
+    );
+
+    return float4(input.color * texture.Sample(texcoord).xyz, 1.0);
 }
+
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//

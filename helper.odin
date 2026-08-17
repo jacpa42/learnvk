@@ -1,7 +1,6 @@
 package learnvk
 
 import "base:runtime"
-import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:mem"
@@ -250,6 +249,11 @@ device_meets_requirements :: proc(
 
 	if !features.geometryShader {
 		log.error("We cannot use a gpu without a geometry shader")
+		return false
+	}
+
+	if !features.samplerAnisotropy {
+		log.error("We cannot use a gpu without a anisotropy")
 		return false
 	}
 

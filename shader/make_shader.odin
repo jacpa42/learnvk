@@ -1,7 +1,6 @@
 package shader
 
 import "base:runtime"
-import "core:debug/trace"
 import "core:fmt"
 import "core:log"
 import "core:mem"

@@ -337,8 +337,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 	model_from_vertex :=
 		linalg.matrix4_scale_f32(1.0 / max(size.x, size.y, size.z, 0.001)) *
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
-		linalg.matrix4_rotate_f32(t, {1, 1, 0})
-
+		linalg.matrix4_rotate_f32(t, {0, 0, 1})
 
 	u = Uniforms {
 		screen_from_world = linalg.matrix4_perspective_f32(

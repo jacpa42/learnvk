@@ -27,6 +27,7 @@ BobHeader :: struct #all_or_none #align (4) {
 
 bob_destroy :: proc(bob: ^Bob) {
 	delete(bob.data)
+	bob.data = nil
 }
 
 bob_from_path :: proc(name: string, allocator := context.allocator) -> (bob: Bob, err: os.Error) {

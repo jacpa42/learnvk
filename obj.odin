@@ -132,19 +132,6 @@ model_get_bounding_box :: proc(m: ^Model) -> (corner, size: [3]f32) {
 	return
 }
 
-model_normalize_indicies :: proc(m: ^Model) {
-	SIGN_BIT :: 0x80000000
-
-	lengths := [3]u32{u32(len(m.vertices)), u32(len(m.texcoords)), u32(len(m.normals))}
-	points := ([^]u32)(raw_data(m.faces))[:slice.size(m.faces[:]) / size_of(u32)]
-
-	for &point, i in points[:] {
-		if point >= SIGN_BIT {
-			point += lengths[i % 3]
-		}
-	}
-}
-
 // odinfmt: disable
 model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
 
@@ -177,8 +164,6 @@ model_load_obj_memory :: proc(m: ^Model, data: []byte) -> (ok: bool) {
 		}
 	}
 
-    model_normalize_indicies(m)
-
 	ok = true
 	return
 }
@@ -189,16 +174,13 @@ model_get_num_points :: proc {
 	model_get_num_points_bob,
 }
 
-
 model_get_num_points_obj :: proc(m: Model) -> u32 {
 	return u32(slice.size(m.faces[:]) / size_of(UnsignedPoint))
 }
 
 model_get_num_points_bob :: proc(bob: Bob) -> u32 {
-	faces := bob_faces(bob)
-	return u32(slice.size(faces) / size_of(UnsignedPoint))
+	return bob.header.faces.count / 3
 }
-
 
 model_get_all_points :: proc(m: Model) -> []UnsignedPoint {
 	len := len(m.faces) / len(Face)

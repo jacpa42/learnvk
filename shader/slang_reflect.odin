@@ -36,6 +36,11 @@ ShaderParameter :: struct {
 ShaderParameterType :: struct {
 	elementType: JsonObject,
 	resultType:  JsonObject,
+	baseShape:   enum {
+		none,
+		texture2D,
+		structuredBuffer,
+	},
 	kind:        enum {
 		constantBuffer,
 		resource,

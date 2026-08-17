@@ -14,16 +14,12 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-
 //
 // https://docs.vulkan.org/tutorial/latest/08_Loading_models.html
-// /home/jacob/Projects/game_programming/learnvk/main.odin:374:23
 //
 
-// TODO: Figure out why the dragon model does not render ...
-
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.pinky
+CURRENT_MODEL := ModelTag.viking_room
 PIPELINE :: Pipeline.model_shader
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
@@ -42,8 +38,6 @@ VULKAN_API_VERSION :: vk.API_VERSION_1_3
 NUM_MODELS :: len([ModelTag]byte)
 
 MODEL_PATH := [ModelTag]string {
-	.test        = "assets/test.obj",
-	.bmw         = "assets/bmw/bmw.obj",
 	.bunny       = "assets/bunny/bunny.obj",
 	.dragon      = "assets/dragon/dragon.obj",
 	.sponza      = "assets/sponza/sponza.obj",
@@ -51,23 +45,21 @@ MODEL_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.obj",
 }
 
-TEXTURE_PATH := [ImageTag]cstring {
+TEXTURE_PATH := [ModelTag]cstring {
+	.bunny       = "assets/viking_room/viking_room.png",
+	.dragon      = "assets/viking_room/viking_room.png",
+	.sponza      = "assets/viking_room/viking_room.png",
+	.pinky       = "assets/viking_room/viking_room.png",
 	.viking_room = "assets/viking_room/viking_room.png",
 }
 
 g_logger: runtime.Logger
 
 ModelTag :: enum {
-	test,
 	bunny,
-	bmw,
 	dragon,
 	sponza,
 	pinky,
-	viking_room,
-}
-
-ImageTag :: enum {
 	viking_room,
 }
 
@@ -166,16 +158,18 @@ Engine :: struct {
 	//
 	// Textures
 	//
-	vk_images:                              [ImageTag]vk.Image,
-	vk_image_memory:                        [ImageTag]vk.DeviceMemory,
+	vk_images:                              [ModelTag]vk.Image,
+	vk_image_views:                         [ModelTag]vk.ImageView,
+	vk_image_memory:                        [ModelTag]vk.DeviceMemory,
+	vk_image_sampler:                       [ModelTag]vk.Sampler,
 
 	//
 	// Depth image
 	//
 	vk_depth_image_format:                  vk.Format,
 	vk_depth_image:                         vk.Image,
-	vk_depth_image_memory:                  vk.DeviceMemory,
 	vk_depth_image_view:                    vk.ImageView,
+	vk_depth_image_memory:                  vk.DeviceMemory,
 
 	//
 	// Pipeline
@@ -254,9 +248,9 @@ engine_init :: proc(engine: ^Engine) {
 	engine.camera = {
 		speed       = 0.01,
 		sensitivity = 0.0005,
-		pitch       = 0.041673217,
-		yaw         = -10.323101,
-		pos         = {4.1101418, -1.0494322, -4.6450386},
+		pitch       = -0.22649306,
+		yaw         = -13.883406,
+		pos         = {-0.05028938, 0.7962618, 2.4146438},
 		up          = {0, 1, 0},
 	}
 
@@ -932,21 +926,25 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	//
 	// Initialize texture images
 	//
-	for tag in ImageTag {
+	for tag in ModelTag {
+		if TEXTURE_PATH[tag] == nil {continue}
 
 		//
 		// Load pixels into RAM
 		//
 		width, height, num_channels: i32
-		desired_channels: i32 = 4
+
+		FORMAT :: vk.Format.R8G8B8A8_SRGB
+		DESIRED_CHANNELS :: 4
+
 		image_data := stb_image.load(
 			TEXTURE_PATH[tag],
 			&width,
 			&height,
 			&num_channels,
-			desired_channels,
+			DESIRED_CHANNELS,
 		)
-		image_data_len := int(width) * int(height) * int(desired_channels)
+		image_data_len := int(width) * int(height) * int(DESIRED_CHANNELS)
 		assert(image_data != nil)
 
 		defer stb_image.image_free(image_data)
@@ -956,7 +954,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			properties = &properties,
 			width = u32(width),
 			height = u32(height),
-			format = .R8G8B8A8_SRGB,
+			format = FORMAT,
 			usage = {.SAMPLED, .TRANSFER_DST},
 			desired_properties = {.DEVICE_LOCAL},
 		)
@@ -995,10 +993,9 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			},
 		}
 
-
 		vk.CmdPipelineBarrier(
 			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-			srcStageMask = {},
+			srcStageMask = {.TOP_OF_PIPE},
 			dstStageMask = {.TRANSFER},
 			dependencyFlags = {},
 			memoryBarrierCount = 0,
@@ -1035,6 +1032,98 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			pRegions = &region,
 		)
 
+		//
+		// Transition the image to be optimal for sampling
+		//
+		image_barrier = vk.ImageMemoryBarrier {
+			sType = .IMAGE_MEMORY_BARRIER,
+			srcAccessMask = {.TRANSFER_WRITE},
+			dstAccessMask = {.SHADER_READ},
+			oldLayout = .TRANSFER_DST_OPTIMAL,
+			newLayout = .SHADER_READ_ONLY_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = engine.vk_images[tag],
+			subresourceRange = {
+				aspectMask = {.COLOR},
+				baseMipLevel = 0,
+				levelCount = 1,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+		}
+
+		vk.CmdPipelineBarrier(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcStageMask = {.TRANSFER},
+			dstStageMask = {.FRAGMENT_SHADER},
+			dependencyFlags = {},
+			memoryBarrierCount = 0,
+			pMemoryBarriers = nil,
+			bufferMemoryBarrierCount = 0,
+			pBufferMemoryBarriers = nil,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers = &image_barrier,
+		)
+
+		//
+		// Create the image view
+		//
+		view_create_info := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			flags = {},
+			image = engine.vk_images[tag],
+			viewType = .D2,
+			format = FORMAT,
+			components = {.IDENTITY, .IDENTITY, .IDENTITY, .IDENTITY},
+			subresourceRange = {
+				aspectMask = {.COLOR},
+				baseMipLevel = 0,
+				levelCount = 1,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+		}
+		result = vk.CreateImageView(
+			engine.vk_device,
+			&view_create_info,
+			&engine.vk_alloc,
+			&engine.vk_image_views[tag],
+		)
+		ensure(result == .SUCCESS)
+
+		//
+		// Create the samplers
+		//
+
+		sampler_create_info := vk.SamplerCreateInfo {
+			sType                   = .SAMPLER_CREATE_INFO,
+			flags                   = {},
+			magFilter               = .LINEAR,
+			minFilter               = .LINEAR,
+			mipmapMode              = .LINEAR, // SamplerMipmapMode,
+			addressModeU            = .REPEAT, // SamplerAddressMode,
+			addressModeV            = .REPEAT, // SamplerAddressMode,
+			addressModeW            = .REPEAT, // SamplerAddressMode,
+			mipLodBias              = {}, // f32,
+			anisotropyEnable        = true, // b32,
+			maxAnisotropy           = engine.vk_physical_device_properties.limits.maxSamplerAnisotropy, // f32,
+			compareEnable           = false, // b32,
+			compareOp               = .ALWAYS, // CompareOp,
+			minLod                  = {}, // f32,
+			maxLod                  = {}, // f32,
+			borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
+			unnormalizedCoordinates = false, // b32,
+		}
+
+		result = vk.CreateSampler(
+			engine.vk_device,
+			&sampler_create_info,
+			&engine.vk_alloc,
+			&engine.vk_image_sampler[tag],
+		)
+		ensure(result == .SUCCESS)
+
 	}
 }
 
@@ -1044,15 +1133,21 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	//
 	// Specify and create the descriptor pool for all buffers
 	//
-	pool_sizes := [2]vk.DescriptorPoolSize {
-		{type = .UNIFORM_BUFFER, descriptorCount = len(ModelTag) * len(ModelBuffer)},
+	pool_sizes := [3]vk.DescriptorPoolSize {
+		{type = .UNIFORM_BUFFER, descriptorCount = len(ModelTag)},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = len(ModelTag)},
 		{type = .STORAGE_BUFFER, descriptorCount = len(ModelTag) * len(ModelBuffer)},
+	}
+
+	maxSets: u32
+	for size in pool_sizes {
+		maxSets += size.descriptorCount
 	}
 
 	pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		flags         = {.FREE_DESCRIPTOR_SET},
-		maxSets       = len(pool_sizes) * len(ModelTag) * len(ModelBuffer),
+		maxSets       = maxSets,
 		poolSizeCount = len(pool_sizes),
 		pPoolSizes    = raw_data(&pool_sizes),
 	}
@@ -1072,24 +1167,12 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		//
 		// Get the bindings from our handy shader processing tool
 		//
-		bindingCount: u32
-		pBindings: [^]vk.DescriptorSetLayoutBinding
-
-		when PIPELINE == .model_shader {
-			bindingCount = len(ModelShaderBinding)
-			pBindings = &MODEL_SHADER_PIPELINE_SET_LAYOUTS[ModelShaderBinding(0)]
-		} else when PIPELINE == .default {
-			bindingCount = len(DefaultBinding)
-			pBindings = &DEFAULT_PIPELINE_SET_LAYOUTS[DefaultBinding(0)]
-		} else {
-			#assert(false)
-		}
-
+		#assert(PIPELINE == .model_shader)
 		descriptor_set_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
 			sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			flags        = {},
-			bindingCount = bindingCount,
-			pBindings    = pBindings,
+			bindingCount = len(ModelShaderBinding),
+			pBindings    = &MODEL_SHADER_PIPELINE_SET_LAYOUTS[ModelShaderBinding(0)],
 		}
 
 		result = vk.CreateDescriptorSetLayout(
@@ -1140,35 +1223,52 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			//
 			// Define which buffer to bind to this descriptor set
 			//
-			buf_info := vk.DescriptorBufferInfo {
-				buffer = 0,
-				offset = 0,
-				range  = vk.DeviceSize(vk.WHOLE_SIZE),
+			info: union {
+				vk.DescriptorBufferInfo,
+				vk.DescriptorImageInfo,
 			}
 
 			switch binding_tag {
 
 			case .uniforms:
 				// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
-				buf_info.buffer = engine.vk_uniform_buffers[0]
+				info = vk.DescriptorBufferInfo {
+					buffer = engine.vk_uniform_buffers[0],
+					range  = vk.DeviceSize(vk.WHOLE_SIZE),
+				}
+
+			case .texture:
+				// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
+
+				if engine.vk_image_sampler[model_tag] == 0 ||
+				   engine.vk_image_views[model_tag] == 0 {
+					continue
+				}
+
+				info = vk.DescriptorImageInfo {
+					sampler     = engine.vk_image_sampler[model_tag],
+					imageView   = engine.vk_image_views[model_tag],
+					imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+				}
 
 			case .buf_pos:
-				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_vertices]
+				info = vk.DescriptorBufferInfo {
+					buffer = engine.vk_model_buffer[model_tag][.model_vertices],
+					range  = vk.DeviceSize(vk.WHOLE_SIZE),
+				}
 
 			case .buf_normal:
-				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_normals]
+				info = vk.DescriptorBufferInfo {
+					buffer = engine.vk_model_buffer[model_tag][.model_normals],
+					range  = vk.DeviceSize(vk.WHOLE_SIZE),
+				}
 
 			case .buf_texcoord:
-				buf_info.buffer = engine.vk_model_buffer[model_tag][.model_texcoords]
+				info = vk.DescriptorBufferInfo {
+					buffer = engine.vk_model_buffer[model_tag][.model_texcoords],
+					range  = vk.DeviceSize(vk.WHOLE_SIZE),
+				}
 
-			}
-
-
-			//
-			// If the buffer we are binding is nil, continue the loop
-			//
-			if buf_info.buffer == 0 {
-				continue
 			}
 
 			write_ds := vk.WriteDescriptorSet {
@@ -1178,7 +1278,15 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 				dstArrayElement = 0,
 				descriptorCount = binding.descriptorCount,
 				descriptorType  = binding.descriptorType,
-				pBufferInfo     = &buf_info,
+				pBufferInfo     = nil,
+				pImageInfo      = nil,
+			}
+
+			switch &t in info {
+			case vk.DescriptorBufferInfo:
+				write_ds.pBufferInfo = &t
+			case vk.DescriptorImageInfo:
+				write_ds.pImageInfo = &t
 			}
 
 			vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
@@ -1315,7 +1423,6 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 		append(exts, vk.KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME)
 		append(exts, vk.KHR_SYNCHRONIZATION_2_EXTENSION_NAME)
 		append(exts, vk.KHR_DYNAMIC_RENDERING_EXTENSION_NAME)
-
 
 		if device_meets_requirements(
 			physical_device,
@@ -1826,15 +1933,21 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 engine_destroy :: proc(engine: ^Engine) {
 	vk.DeviceWaitIdle(engine.vk_device)
 
+	for tag in ModelTag {
+		vk.DestroySampler(engine.vk_device, engine.vk_image_sampler[tag], &engine.vk_alloc)
+		vk.FreeMemory(engine.vk_device, engine.vk_image_memory[tag], &engine.vk_alloc)
+		vk.DestroyImageView(engine.vk_device, engine.vk_image_views[tag], &engine.vk_alloc)
+		vk.DestroyImage(engine.vk_device, engine.vk_images[tag], &engine.vk_alloc)
+	}
+
 	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, &engine.vk_alloc)
 	vk.DestroyBuffer(engine.vk_device, engine.vk_transfer_buffer, &engine.vk_alloc)
-
 
 	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, &engine.vk_alloc)
 
 	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, &engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
 	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, &engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
 
 	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, &engine.vk_alloc)
 
