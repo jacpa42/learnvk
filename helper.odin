@@ -8,6 +8,34 @@ import "core:mem"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer) {
+	begin_info := vk.CommandBufferBeginInfo {
+		sType            = .COMMAND_BUFFER_BEGIN_INFO,
+		flags            = {.ONE_TIME_SUBMIT},
+		pInheritanceInfo = nil,
+	}
+
+	result := vk.BeginCommandBuffer(cmdbuf, &begin_info)
+	ensure(result == .SUCCESS)
+}
+
+cmd_oneshot_end :: proc(cmdbuf: vk.CommandBuffer, queue: vk.Queue) {
+	result := vk.EndCommandBuffer(cmdbuf)
+	ensure(result == .SUCCESS)
+
+	cmdbuffers := [1]vk.CommandBuffer{cmdbuf}
+	submit_info := vk.SubmitInfo {
+		sType              = .SUBMIT_INFO,
+		commandBufferCount = 1,
+		pCommandBuffers    = raw_data(&cmdbuffers),
+	}
+
+	result = vk.QueueSubmit(queue, 1, &submit_info, fence = 0)
+	ensure(result == .SUCCESS)
+
+	vk.QueueWaitIdle(queue)
+}
+
 find_format :: proc(
 	engine: ^Engine,
 	candidates: []vk.Format,
@@ -25,6 +53,64 @@ find_format :: proc(
 	}
 
 	unreachable()
+}
+
+engine_create_image :: proc(
+	engine: ^Engine,
+	properties: ^vk.PhysicalDeviceMemoryProperties,
+	width, height: u32,
+	format: vk.Format,
+	usage: vk.ImageUsageFlags,
+	desired_properties: vk.MemoryPropertyFlags,
+) -> (
+	image: vk.Image,
+	memory: vk.DeviceMemory,
+) {
+	create_info := vk.ImageCreateInfo {
+		sType         = .IMAGE_CREATE_INFO,
+		imageType     = .D2,
+		format        = format,
+		extent        = {width, height, 1},
+		mipLevels     = 1,
+		arrayLayers   = 1,
+		samples       = {._1},
+		tiling        = .OPTIMAL,
+		usage         = usage,
+		sharingMode   = .EXCLUSIVE,
+		initialLayout = .UNDEFINED,
+	}
+
+	result := vk.CreateImage(engine.vk_device, &create_info, &engine.vk_alloc, &image)
+	ensure(result == .SUCCESS)
+
+	//
+	// Allocate memory for the image
+	//
+	requirements: vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(engine.vk_device, image, &requirements)
+
+	alloc_info := vk.MemoryAllocateInfo {
+		sType           = .MEMORY_ALLOCATE_INFO,
+		allocationSize  = requirements.size,
+		memoryTypeIndex = device_get_memory_type_index(
+			properties,
+			requirements,
+			desired_properties,
+		),
+	}
+
+	result = vk.AllocateMemory(engine.vk_device, &alloc_info, &engine.vk_alloc, &memory)
+	ensure(result == .SUCCESS)
+
+	result = vk.BindImageMemory(
+		device = engine.vk_device,
+		image = image,
+		memory = memory,
+		memoryOffset = 0, // TODO: What is this about?
+	)
+	ensure(result == .SUCCESS)
+
+	return
 }
 
 engine_create_buffer :: proc(
@@ -50,11 +136,7 @@ engine_create_buffer :: proc(
 	requirements: vk.MemoryRequirements
 	vk.GetBufferMemoryRequirements(engine.vk_device, buffer, &requirements)
 
-	memory_type_index := device_get_buffer_memory_type(
-		properties,
-		requirements,
-		desired_properties,
-	)
+	memory_type_index := device_get_memory_type_index(properties, requirements, desired_properties)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
@@ -80,7 +162,7 @@ engine_create_buffer :: proc(
 // Given the properties of the currently bound physical device, find the memory
 // type we will use for the buffer given the memory requirements.
 //
-device_get_buffer_memory_type :: proc(
+device_get_memory_type_index :: proc(
 	properties: ^vk.PhysicalDeviceMemoryProperties,
 	requirements: vk.MemoryRequirements,
 	desired_properties: vk.MemoryPropertyFlags,

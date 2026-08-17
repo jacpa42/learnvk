@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:math/bits"
@@ -10,6 +11,7 @@ import "core:path/filepath"
 import "core:slice"
 import "core:time"
 import "vendor:glfw"
+import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
 
@@ -20,34 +22,38 @@ import vk "vendor:vulkan"
 
 // TODO: Figure out why the dragon model does not render ...
 
+APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.pinky
 PIPELINE :: Pipeline.model_shader
 
+CULL_MODE :: vk.CullModeFlags{.BACK}
+ENABLE_DEPTH_TEST :: true
+ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
+FRAMES_IN_FLIGHT :: 2
+FRONT_FACE :: vk.FrontFace.CLOCKWISE
 LINE_WIDTH: f32 : 1
+MAX_DYNAMIC_STATE :: 90
+MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
+MAX_SWAPCHAIN_IMAGES :: 8
 POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
-CULL_MODE :: vk.CullModeFlags{.BACK}
-FRONT_FACE :: vk.FrontFace.CLOCKWISE
-ENABLE_DEPTH_TEST :: true
-
+STAGING_BUFFER_SIZE :: 64 * mem.Megabyte
+VULKAN_API_VERSION :: vk.API_VERSION_1_3
 NUM_MODELS :: len([ModelTag]byte)
 
 MODEL_PATH := [ModelTag]string {
-	.test   = "assets/test.obj",
-	.bmw    = "assets/bmw/bmw.obj",
-	.bunny  = "assets/bunny/bunny.obj",
-	.dragon = "assets/dragon/dragon.obj",
-	.sponza = "assets/sponza/sponza.obj",
-	.pinky  = "assets/pinky/pinky.obj",
+	.test        = "assets/test.obj",
+	.bmw         = "assets/bmw/bmw.obj",
+	.bunny       = "assets/bunny/bunny.obj",
+	.dragon      = "assets/dragon/dragon.obj",
+	.sponza      = "assets/sponza/sponza.obj",
+	.pinky       = "assets/pinky/pinky.obj",
+	.viking_room = "assets/viking_room/viking_room.obj",
 }
 
-VULKAN_API_VERSION :: vk.API_VERSION_1_3
-ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
-MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
-MAX_SWAPCHAIN_IMAGES :: 8
-FRAMES_IN_FLIGHT :: 2
-MAX_DYNAMIC_STATE :: 90
-APP_NAME: cstring = "learnvk"
+TEXTURE_PATH := [ImageTag]cstring {
+	.viking_room = "assets/viking_room/viking_room.png",
+}
 
 g_logger: runtime.Logger
 
@@ -58,6 +64,11 @@ ModelTag :: enum {
 	dragon,
 	sponza,
 	pinky,
+	viking_room,
+}
+
+ImageTag :: enum {
+	viking_room,
 }
 
 Uniforms :: struct #all_or_none #align (16) {
@@ -151,6 +162,12 @@ Engine :: struct {
 	vk_transfer_buffer_memory:              vk.DeviceMemory,
 	vk_model_buffer:                        [ModelTag][ModelBuffer]vk.Buffer,
 	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
+
+	//
+	// Textures
+	//
+	vk_images:                              [ImageTag]vk.Image,
+	vk_image_memory:                        [ImageTag]vk.DeviceMemory,
 
 	//
 	// Depth image
@@ -288,11 +305,6 @@ engine_init :: proc(engine: ^Engine) {
 	}
 
 	model_destroy(&temp_model)
-
-	for tag in engine.model_loaded {
-		model := engine.models[tag]
-		fmt.eprintfln("{} :: %#v", tag, bob_header(model))
-	}
 
 	//
 	// Initialize GLFW and create our window
@@ -633,9 +645,10 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	}
 
 	//
-	// Create the vertex/uniform buffers
+	// Create the vertex/uniform/images buffers
+	// Basically everything which requires the staging buffer mapped into memory
 	//
-	engine_init_buffers(engine)
+	engine_init_buffer_and_images(engine)
 
 	//
 	// Create the descriptor sets/set_layouts for all the models and the uniform
@@ -761,7 +774,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	ensure(result == .SUCCESS)
 }
 
-engine_init_buffers :: proc(engine: ^Engine) {
+engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	result: vk.Result
 
 	//
@@ -807,7 +820,7 @@ engine_init_buffers :: proc(engine: ^Engine) {
 	engine.vk_transfer_buffer, engine.vk_transfer_buffer_memory = engine_create_buffer(
 		engine,
 		&properties,
-		64 * mem.Megabyte,
+		STAGING_BUFFER_SIZE,
 		{.TRANSFER_SRC},
 		{.HOST_VISIBLE, .HOST_COHERENT},
 	)
@@ -831,6 +844,8 @@ engine_init_buffers :: proc(engine: ^Engine) {
 
 	for model_tag in engine.model_loaded {
 		model := engine.models[model_tag]
+		defer model_destroy(&engine.models[model_tag])
+
 		for buffer_tag in ModelBuffer {
 			memory_to_upload: []byte
 			size: vk.DeviceSize
@@ -876,6 +891,7 @@ engine_init_buffers :: proc(engine: ^Engine) {
 			//
 			assert(len(memory_to_upload) > 0)
 			assert(int(size) == slice.size(memory_to_upload))
+			assert(slice.size(memory_to_upload) <= STAGING_BUFFER_SIZE)
 
 			engine.vk_model_buffer[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
 				engine_create_buffer(engine, &properties, size, usage, desired_properties)
@@ -894,14 +910,8 @@ engine_init_buffers :: proc(engine: ^Engine) {
 			// command buffer.
 			//
 
-			begin_info := vk.CommandBufferBeginInfo {
-					sType            = .COMMAND_BUFFER_BEGIN_INFO,
-					flags            = {.ONE_TIME_SUBMIT},
-					pInheritanceInfo = nil,
-				}
-
-			result = vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
-			ensure(result == .SUCCESS)
+			cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
+			defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
 
 			region := vk.BufferCopy {
 					srcOffset = 0,
@@ -916,25 +926,115 @@ engine_init_buffers :: proc(engine: ^Engine) {
 				regionCount = 1,
 				pRegions = &region,
 			)
-
-			//
-			// Submit the commands
-			//
-
-			result = vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
-			ensure(result == .SUCCESS)
-
-			submit_info := vk.SubmitInfo {
-					sType              = .SUBMIT_INFO,
-					commandBufferCount = 1,
-					pCommandBuffers    = &engine.vk_cmdbufs[engine.vk_frame_index],
-				}
-
-			result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, fence = 0)
-			ensure(result == .SUCCESS)
-
-			vk.QueueWaitIdle(engine.vk_queue)
 		}
+	}
+
+	//
+	// Initialize texture images
+	//
+	for tag in ImageTag {
+
+		//
+		// Load pixels into RAM
+		//
+		width, height, num_channels: i32
+		desired_channels: i32 = 4
+		image_data := stb_image.load(
+			TEXTURE_PATH[tag],
+			&width,
+			&height,
+			&num_channels,
+			desired_channels,
+		)
+		image_data_len := int(width) * int(height) * int(desired_channels)
+		assert(image_data != nil)
+
+		defer stb_image.image_free(image_data)
+
+		engine.vk_images[tag], engine.vk_image_memory[tag] = engine_create_image(
+			engine = engine,
+			properties = &properties,
+			width = u32(width),
+			height = u32(height),
+			format = .R8G8B8A8_SRGB,
+			usage = {.SAMPLED, .TRANSFER_DST},
+			desired_properties = {.DEVICE_LOCAL},
+		)
+
+		//
+		// Upload first to the staging buffer
+		//
+		assert(image_data_len <= STAGING_BUFFER_SIZE)
+		mem.copy_non_overlapping(dst = transfer_buf_mmap, src = image_data, len = image_data_len)
+
+		//
+		// Execute the command buffer operations to create our image gpu side
+		//
+		cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
+		defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
+
+		//
+		// Setup a memory barrier which syncs the image transition and mem copy
+		// of pixel data. the mem copy happens directly after the memory transition.
+		//
+		image_barrier := vk.ImageMemoryBarrier {
+			sType = .IMAGE_MEMORY_BARRIER,
+			srcAccessMask = {},
+			dstAccessMask = {.TRANSFER_WRITE},
+			oldLayout = .UNDEFINED,
+			newLayout = .TRANSFER_DST_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = engine.vk_images[tag],
+			subresourceRange = {
+				aspectMask = {.COLOR},
+				baseMipLevel = 0,
+				levelCount = 1,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+		}
+
+
+		vk.CmdPipelineBarrier(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcStageMask = {},
+			dstStageMask = {.TRANSFER},
+			dependencyFlags = {},
+			memoryBarrierCount = 0,
+			pMemoryBarriers = nil,
+			bufferMemoryBarrierCount = 0,
+			pBufferMemoryBarriers = nil,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers = &image_barrier,
+		)
+
+		//
+		// Add the copy command
+		//
+		region := vk.BufferImageCopy {
+			bufferOffset = 0,
+			bufferRowLength = 0,
+			bufferImageHeight = 0,
+			imageSubresource = {
+				aspectMask = {.COLOR},
+				mipLevel = 0,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+			imageOffset = {0, 0, 0},
+			imageExtent = {u32(width), u32(height), 1},
+		}
+
+		vk.CmdCopyBufferToImage(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcBuffer = engine.vk_transfer_buffer,
+			dstImage = engine.vk_images[tag],
+			dstImageLayout = .TRANSFER_DST_OPTIMAL,
+			regionCount = 1,
+			pRegions = &region,
+		)
+
 	}
 }
 
@@ -1635,7 +1735,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	memory_requirements: vk.MemoryRequirements
 	vk.GetImageMemoryRequirements(engine.vk_device, engine.vk_depth_image, &memory_requirements)
 
-	memory_type_index := device_get_buffer_memory_type(
+	memory_type_index := device_get_memory_type_index(
 		&properties,
 		memory_requirements,
 		{.DEVICE_LOCAL},

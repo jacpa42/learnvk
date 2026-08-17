@@ -6,7 +6,10 @@ import "core:os"
 import "core:slice"
 import "core:time"
 
-Bob :: []u32
+Bob :: struct {
+	header: BobHeader,
+	data:   []u32,
+}
 
 Slice :: struct {
 	start, count: u32,
@@ -23,8 +26,7 @@ BobHeader :: struct #all_or_none #align (4) {
 }
 
 bob_destroy :: proc(bob: ^Bob) {
-	delete(bob^)
-	bob^ = {}
+	delete(bob.data)
 }
 
 bob_from_path :: proc(name: string, allocator := context.allocator) -> (bob: Bob, err: os.Error) {
@@ -38,7 +40,8 @@ bob_from_path :: proc(name: string, allocator := context.allocator) -> (bob: Bob
 	data := os.read_entire_file(name, allocator) or_return
 
 	err = nil
-	bob = ([^]u32)(raw_data(data))[:len(data) / size_of(u32)]
+	bob.data = ([^]u32)(raw_data(data))[:len(data) / size_of(u32)]
+	bob.header = (^BobHeader)(raw_data(bob.data))^
 
 	return
 }
@@ -92,10 +95,6 @@ bob_write_from_model :: proc(m: ^Model, output_path: string) -> (err: os.Error) 
 	return
 }
 
-bob_header :: proc "contextless" (bob: Bob) -> ^BobHeader {
-	return (^BobHeader)(raw_data(bob))
-}
-
 bob_vertices :: proc "contextless" (bob: Bob) -> []f32 {
 	data := bob_vertex_bytes(bob)
 	return ([^]f32)(raw_data(data))[:len(data) / size_of(f32)]
@@ -117,25 +116,25 @@ bob_faces :: proc "contextless" (bob: Bob) -> []Face {
 }
 
 bob_vertex_bytes :: proc "contextless" (bob: Bob) -> []byte {
-	s := bob_header(bob).vertices
-	data := bob[s.start:s.start + s.count]
+	s := bob.header.vertices
+	data := bob.data[s.start:s.start + s.count]
 	return slice.to_bytes(data)
 }
 
 bob_normal_bytes :: proc "contextless" (bob: Bob) -> []byte {
-	s := bob_header(bob).normals
-	data := bob[s.start:s.start + s.count]
+	s := bob.header.normals
+	data := bob.data[s.start:s.start + s.count]
 	return slice.to_bytes(data)
 }
 
 bob_texcoord_bytes :: proc "contextless" (bob: Bob) -> []byte {
-	s := bob_header(bob).texcoords
-	data := bob[s.start:s.start + s.count]
+	s := bob.header.texcoords
+	data := bob.data[s.start:s.start + s.count]
 	return slice.to_bytes(data)
 }
 
 bob_face_bytes :: proc "contextless" (bob: Bob) -> []byte {
-	s := bob_header(bob).faces
-	data := bob[s.start:s.start + s.count]
+	s := bob.header.faces
+	data := bob.data[s.start:s.start + s.count]
 	return slice.to_bytes(data)
 }

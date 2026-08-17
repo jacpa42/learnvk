@@ -9,8 +9,6 @@ import "core:os"
 import "core:path/filepath"
 import "core:thread"
 
-g_trace: trace.Context
-
 //
 // We use this in our make file to generate an Odin file which gets compiled
 // into our main executable which contains our shader SPIR-V byte code.
@@ -32,14 +30,6 @@ main :: proc() {
 			dump_mem_info(track)
 			mem.tracking_allocator_destroy(&track)
 		}
-	}
-
-	//
-	// Setup stack trace
-	//
-	when ODIN_DEBUG {
-		context.assertion_failure_proc = assertion_failure_proc
-		assert(trace.init(&g_trace))
 	}
 
 	//
@@ -315,31 +305,3 @@ dump_mem_info :: proc(track: mem.Tracking_Allocator) {
 	}
 }
 
-assertion_failure_proc :: proc(prefix, message: string, loc := #caller_location) -> ! {
-	runtime.print_caller_location(loc)
-	runtime.print_string(" ")
-	runtime.print_string(prefix)
-	if len(message) > 0 {
-		runtime.print_string(": ")
-		runtime.print_string(message)
-	}
-	runtime.print_byte('\n')
-
-	ctx := &g_trace
-	if !trace.in_resolve(ctx) {
-		buf: [64]trace.Frame
-		runtime.print_string("Debug Trace:\n")
-		frames := trace.frames(ctx, 1, buf[:])
-		for f, i in frames {
-			fl := trace.resolve(ctx, f, context.temp_allocator)
-			if fl.loc.file_path == "" && fl.loc.line == 0 {
-				continue
-			}
-			runtime.print_caller_location(fl.loc)
-			runtime.print_string(" - frame ")
-			runtime.print_int(i)
-			runtime.print_byte('\n')
-		}
-	}
-	runtime.trap()
-}

@@ -331,13 +331,11 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 
 	view_direction := camera_view_dir(&engine.camera)
 
-	corner := bob_header(engine.models[CURRENT_MODEL]).corner
-	size := bob_header(engine.models[CURRENT_MODEL]).size
+	corner := engine.models[CURRENT_MODEL].header.corner
+	size := engine.models[CURRENT_MODEL].header.size
 
 	model_from_vertex :=
-		linalg.matrix4_scale_f32(
-			{1.0 / max(size.x, 0.001), 1.0 / max(size.y, 0.001), 1.0 / max(size.z, 0.001)},
-		) *
+		linalg.matrix4_scale_f32(1.0 / max(size.x, size.y, size.z, 0.001)) *
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
 		linalg.matrix4_rotate_f32(t, {1, 1, 0})
 
