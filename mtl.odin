@@ -8,7 +8,7 @@ starts_with := strings.starts_with
 
 MaterialList :: struct {
 	material_strings: [dynamic]byte,
-	materials:        [dynamic; MAX_MATERIALS]Material,
+	materials:        [dynamic]Material,
 }
 
 Material :: struct {
@@ -35,6 +35,121 @@ Illumination :: enum {
 	Transparency_Glass_on,
 	Reflection_Ray_trace_off = 9,
 	Casts_shadows_onto_invisible_surfaces = 10,
+}
+
+
+mtllist_init :: proc(m: ^MaterialList) {
+	assert(m != nil)
+	make_or_clear(&m.materials)
+	make_or_clear(&m.material_strings)
+}
+
+mtllist_destroy :: proc(m: ^MaterialList) {
+	assert(m != nil)
+	defer m^ = {}
+	delete(m.materials)
+	delete(m.material_strings)
+}
+
+
+//
+// newmtl leaf
+// 	Ns 10.0000
+// 	Ni 1.5000
+// 	d 1.0000
+// 	Tr 0.0000
+// 	Tf 1.0000 1.0000 1.0000
+// 	illum 2
+// 	Ka 1 1 1
+// 	Kd 1 1 1
+// 	Ks 0.0000 0.0000 0.0000
+// 	Ke 0.0000 0.0000 0.0000
+// 	map_Ka textures\sponza_thorn_diff.png
+// 	map_Kd textures\sponza_thorn_diff.png
+// 	map_d textures\sponza_thorn_mask.png
+//  map_bump textures\sponza_thorn_bump.png
+//
+mtllist_load_mtl_memory :: proc(m: ^MaterialList, data: []byte) -> (ok: bool) {
+	mtllist_init(m)
+
+	mat: ^Material
+
+	line_iter := string(data)
+	for next_line in strings.split_lines_iterator(&line_iter) {
+		if len(next_line) < 2 {continue}
+		line := strings.trim(next_line, "\t\n\v\f\r ")
+
+		if line[0] == '#' {continue}
+
+		if starts_with(line, "newmtl") {
+			mat = mtllist_new_material(m)
+			mat.name = mtllist_append_string(m, mtl_parse_string(line))
+
+			//
+			// Float values
+			//
+
+		} else if starts_with(line, "Ns") {
+			mat.Ns = mtl_parse_f32(line) or_return
+
+		} else if starts_with(line, "Ni") {
+			mat.Ni = mtl_parse_f32(line) or_return
+
+		} else if starts_with(line, "d") {
+			mat.d = mtl_parse_f32(line) or_return
+
+		} else if starts_with(line, "Tr") {
+			mat.Tr = mtl_parse_f32(line) or_return
+
+			//
+			// Floatx3 values
+			//
+
+		} else if starts_with(line, "Tf") {
+			mat.Tf = mtl_parse_3_f32(line) or_return
+
+		} else if starts_with(line, "Ka") {
+			mat.Ka = mtl_parse_3_f32(line) or_return
+
+		} else if starts_with(line, "Kd") {
+			mat.Kd = mtl_parse_3_f32(line) or_return
+
+		} else if starts_with(line, "Ks") {
+			mat.Ks = mtl_parse_3_f32(line) or_return
+
+		} else if starts_with(line, "Ke") {
+			mat.Ke = mtl_parse_3_f32(line) or_return
+
+
+			//
+			// Special enum
+			//
+
+		} else if starts_with(line, "illum") {
+			mat.illum = mtl_parse_illum(line) or_return
+
+
+			//
+			// path strings
+			//
+
+		} else if starts_with(line, "map_Ka") {
+			mat.map_Ka = mtllist_append_string(m, mtl_parse_string(line))
+
+		} else if starts_with(line, "map_Kd") {
+			mat.map_Kd = mtllist_append_string(m, mtl_parse_string(line))
+
+		} else if starts_with(line, "map_d") {
+			mat.map_d = mtllist_append_string(m, mtl_parse_string(line))
+
+		} else if starts_with(line, "map_bump") {
+			mat.map_bump = mtllist_append_string(m, mtl_parse_string(line))
+		}
+
+	}
+
+	ok = true
+	return
 }
 
 mtllist_new_material :: proc(mtllist: ^MaterialList) -> ^Material {
@@ -111,117 +226,4 @@ mtl_parse_illum :: proc(line: string) -> (illum: Illumination, ok: bool) {
 
 	ok = true
 	return
-}
-
-//
-// newmtl leaf
-// 	Ns 10.0000
-// 	Ni 1.5000
-// 	d 1.0000
-// 	Tr 0.0000
-// 	Tf 1.0000 1.0000 1.0000
-// 	illum 2
-// 	Ka 1 1 1
-// 	Kd 1 1 1
-// 	Ks 0.0000 0.0000 0.0000
-// 	Ke 0.0000 0.0000 0.0000
-// 	map_Ka textures\sponza_thorn_diff.png
-// 	map_Kd textures\sponza_thorn_diff.png
-// 	map_d textures\sponza_thorn_mask.png
-//  map_bump textures\sponza_thorn_bump.png
-//
-mtllist_load_mtl_memory :: proc(m: ^MaterialList, data: []byte) -> (ok: bool) {
-	mtllist_init(m)
-
-	mat: ^Material
-
-	line_iter := string(data)
-	for next_line in strings.split_lines_iterator(&line_iter) {
-		if len(next_line) < 2 {continue}
-		line := strings.trim(next_line, "\t\n\v\f\r ")
-
-		if line[0] == '#' {continue}
-
-
-		if starts_with(line, "newmtl") {
-			mat = mtllist_new_material(m)
-			mat.name = mtllist_append_string(m, mtl_parse_string(line))
-
-			//
-			// Float values
-			//
-
-		} else if starts_with(line, "Ns") {
-			mat.Ns = mtl_parse_f32(line) or_return
-
-		} else if starts_with(line, "Ni") {
-			mat.Ni = mtl_parse_f32(line) or_return
-
-		} else if starts_with(line, "d") {
-			mat.d = mtl_parse_f32(line) or_return
-
-		} else if starts_with(line, "Tr") {
-			mat.Tr = mtl_parse_f32(line) or_return
-
-			//
-			// Floatx3 values
-			//
-
-		} else if starts_with(line, "Tf") {
-			mat.Tf = mtl_parse_3_f32(line) or_return
-
-		} else if starts_with(line, "Ka") {
-			mat.Ka = mtl_parse_3_f32(line) or_return
-
-		} else if starts_with(line, "Kd") {
-			mat.Kd = mtl_parse_3_f32(line) or_return
-
-		} else if starts_with(line, "Ks") {
-			mat.Ks = mtl_parse_3_f32(line) or_return
-
-		} else if starts_with(line, "Ke") {
-			mat.Ke = mtl_parse_3_f32(line) or_return
-
-
-			//
-			// Special enum
-			//
-
-		} else if starts_with(line, "illum") {
-			mat.illum = mtl_parse_illum(line) or_return
-
-
-			//
-			// path strings
-			//
-
-		} else if starts_with(line, "map_Ka") {
-			mat.map_Ka = mtllist_append_string(m, mtl_parse_string(line))
-
-		} else if starts_with(line, "map_Kd") {
-			mat.map_Kd = mtllist_append_string(m, mtl_parse_string(line))
-
-		} else if starts_with(line, "map_d") {
-			mat.map_d = mtllist_append_string(m, mtl_parse_string(line))
-
-		} else if starts_with(line, "map_bump") {
-			mat.map_bump = mtllist_append_string(m, mtl_parse_string(line))
-		}
-
-	}
-
-	ok = true
-	return
-}
-
-mtllist_init :: proc(m: ^MaterialList) {
-	assert(m != nil)
-	clear(&m.materials)
-
-	if cap(m.material_strings) == 0 {
-		m.material_strings = make([dynamic]byte, 0, 128)
-	} else {
-		clear(&m.material_strings)
-	}
-
 }

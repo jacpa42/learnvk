@@ -44,6 +44,7 @@ VULKAN_API_VERSION :: vk.API_VERSION_1_3
 NUM_MODELS :: len([ModelTag]byte)
 
 MODEL_PATH := [ModelTag]string {
+	.bmw         = "assets/bmw/bmw.obj",
 	.bunny       = "assets/bunny/bunny.obj",
 	.dragon      = "assets/dragon/dragon.obj",
 	.sponza      = "assets/sponza/sponza.obj",
@@ -52,6 +53,7 @@ MODEL_PATH := [ModelTag]string {
 }
 
 MATERIAL_PATH := [ModelTag]string {
+	.bmw         = "assets/bmw/bmw.mtl",
 	.bunny       = {},
 	.dragon      = {},
 	.sponza      = "assets/sponza/sponza.mtl",
@@ -62,6 +64,7 @@ MATERIAL_PATH := [ModelTag]string {
 g_logger: runtime.Logger
 
 ModelTag :: enum {
+	bmw,
 	bunny,
 	dragon,
 	sponza,
