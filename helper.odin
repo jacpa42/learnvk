@@ -328,6 +328,9 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
 	case glfw.KEY_ESCAPE:
 		glfw.SetWindowShouldClose(window, true)
 
+	case glfw.KEY_R:
+        if activate do engine.disable_rotate = !engine.disable_rotate
+
 	case glfw.KEY_Q:
         if activate {
             CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)

@@ -17,6 +17,12 @@ import vk "vendor:vulkan"
 //
 // https://docs.vulkan.org/tutorial/latest/08_Loading_models.html
 //
+// TODO: For some reason the textures don't really render properly onto the
+// model. Failure points:
+// 1. The model->bob conversion
+// 2. The way I load the texture with stb
+// 3. The way I define the texture with vulkan
+//
 
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
@@ -45,12 +51,12 @@ MODEL_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.obj",
 }
 
-TEXTURE_PATH := [ModelTag]cstring {
-	.bunny       = "assets/viking_room/viking_room.png",
-	.dragon      = "assets/viking_room/viking_room.png",
-	.sponza      = "assets/viking_room/viking_room.png",
-	.pinky       = "assets/viking_room/viking_room.png",
-	.viking_room = "assets/viking_room/viking_room.png",
+MATERIAL_PATH := [ModelTag]string {
+	.bunny       = {},
+	.dragon      = {},
+	.sponza      = "assets/sponza/sponza.mtl",
+	.pinky       = {},
+	.viking_room = "assets/viking_room/viking_room.mtl",
 }
 
 g_logger: runtime.Logger
@@ -108,6 +114,7 @@ Engine :: struct {
 	// Stuff for eye position
 	//
 	actions:                                bit_set[Action],
+	disable_rotate:                         bool,
 	camera:                                 Camera,
 
 	//
@@ -923,6 +930,8 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		}
 	}
 
+	TEXTURE_FORMAT :: vk.Format.R8G8B8A8_SRGB
+
 	//
 	// Initialize texture images
 	//
@@ -934,7 +943,6 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		//
 		width, height, num_channels: i32
 
-		FORMAT :: vk.Format.R8G8B8A8_SRGB
 		DESIRED_CHANNELS :: 4
 
 		image_data := stb_image.load(
@@ -954,7 +962,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			properties = &properties,
 			width = u32(width),
 			height = u32(height),
-			format = FORMAT,
+			format = TEXTURE_FORMAT,
 			usage = {.SAMPLED, .TRANSFER_DST},
 			desired_properties = {.DEVICE_LOCAL},
 		)
@@ -984,13 +992,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			image = engine.vk_images[tag],
-			subresourceRange = {
-				aspectMask = {.COLOR},
-				baseMipLevel = 0,
-				levelCount = 1,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			},
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 
 		vk.CmdPipelineBarrier(
@@ -1010,16 +1012,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		// Add the copy command
 		//
 		region := vk.BufferImageCopy {
-			bufferOffset = 0,
-			bufferRowLength = 0,
-			bufferImageHeight = 0,
-			imageSubresource = {
-				aspectMask = {.COLOR},
-				mipLevel = 0,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			},
-			imageOffset = {0, 0, 0},
+			imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
 			imageExtent = {u32(width), u32(height), 1},
 		}
 
@@ -1044,13 +1037,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			image = engine.vk_images[tag],
-			subresourceRange = {
-				aspectMask = {.COLOR},
-				baseMipLevel = 0,
-				levelCount = 1,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			},
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 
 		vk.CmdPipelineBarrier(
@@ -1065,24 +1052,18 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			imageMemoryBarrierCount = 1,
 			pImageMemoryBarriers = &image_barrier,
 		)
+	}
 
-		//
-		// Create the image view
-		//
+	//
+	// Create the image view
+	//
+	for tag in ModelTag {
 		view_create_info := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
-			flags = {},
 			image = engine.vk_images[tag],
 			viewType = .D2,
-			format = FORMAT,
-			components = {.IDENTITY, .IDENTITY, .IDENTITY, .IDENTITY},
-			subresourceRange = {
-				aspectMask = {.COLOR},
-				baseMipLevel = 0,
-				levelCount = 1,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			},
+			format = TEXTURE_FORMAT,
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 		result = vk.CreateImageView(
 			engine.vk_device,
@@ -1091,10 +1072,12 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			&engine.vk_image_views[tag],
 		)
 		ensure(result == .SUCCESS)
+	}
 
-		//
-		// Create the samplers
-		//
+	//
+	// Create the samplers
+	//
+	for tag in ModelTag {
 
 		sampler_create_info := vk.SamplerCreateInfo {
 			sType                   = .SAMPLER_CREATE_INFO,
@@ -1105,13 +1088,13 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			addressModeU            = .REPEAT, // SamplerAddressMode,
 			addressModeV            = .REPEAT, // SamplerAddressMode,
 			addressModeW            = .REPEAT, // SamplerAddressMode,
-			mipLodBias              = {}, // f32,
+			mipLodBias              = 0, // f32,
 			anisotropyEnable        = true, // b32,
 			maxAnisotropy           = engine.vk_physical_device_properties.limits.maxSamplerAnisotropy, // f32,
 			compareEnable           = false, // b32,
 			compareOp               = .ALWAYS, // CompareOp,
-			minLod                  = {}, // f32,
-			maxLod                  = {}, // f32,
+			minLod                  = 0, // f32,
+			maxLod                  = 0, // f32,
 			borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
 			unnormalizedCoordinates = false, // b32,
 		}
@@ -1123,7 +1106,6 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			&engine.vk_image_sampler[tag],
 		)
 		ensure(result == .SUCCESS)
-
 	}
 }
 

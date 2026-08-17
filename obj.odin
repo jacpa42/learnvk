@@ -246,7 +246,7 @@ model_append_parsed_face :: proc(m: ^Model, parsed_face: ParsedFace) {
 
 model_append_vertex :: proc(m: ^Model, v: Vertex) {append(&m.vertices, v[0], v[1], v[2])}
 model_append_normal :: proc(m: ^Model, n: Normal) {append(&m.normals, n[0], n[1], n[2])}
-model_append_texcoord :: proc(m: ^Model, t: TexCoord) {append(&m.texcoords, t[0], t[1])}
+model_append_texcoord :: proc(m: ^Model, t: TexCoord) {append(&m.texcoords, t[0], 1.0 - t[1])}
 
 parse_vertex_pos :: #force_inline proc(line: string) -> (v: Vertex, ok: bool) {
 	return parse_vector(Vertex, line)
