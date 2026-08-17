@@ -52,6 +52,16 @@ MODEL_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.obj",
 }
 
+TEXTURE_PATH := #partial [ModelTag]cstring {
+	.bmw         = "assets/viking_room/viking_room.png",
+	.bunny       = "assets/viking_room/viking_room.png",
+	.dragon      = "assets/viking_room/viking_room.png",
+	.sponza      = "assets/viking_room/viking_room.png",
+	.pinky       = "assets/viking_room/viking_room.png",
+	.viking_room = "assets/viking_room/viking_room.png",
+}
+
+
 MATERIAL_PATH := [ModelTag]string {
 	.bmw         = "assets/bmw/bmw.mtl",
 	.bunny       = {},
@@ -118,6 +128,8 @@ Engine :: struct {
 	//
 	actions:                                bit_set[Action],
 	disable_rotate:                         bool,
+	model_rotation:                         f32,
+	delta_time:                             f32,
 	camera:                                 Camera,
 
 	//
@@ -232,7 +244,12 @@ main :: proc() {
 	//
 	// Main loop
 	//
+	frame_watch: time.Stopwatch
 	for !glfw.WindowShouldClose(engine.window) {
+		time.stopwatch_reset(&frame_watch)
+		time.stopwatch_start(&frame_watch)
+		defer engine.delta_time = f32(f64(time.stopwatch_duration(frame_watch)) * 1e-9)
+
 		glfw.PollEvents()
 
 		if engine.stop_rendering {

@@ -324,7 +324,9 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 	// Engine setup uniforms
 	//
 
-	t := f32(glfw.GetTime())
+	if !engine.disable_rotate {
+		engine.model_rotation = math.remainder(engine.model_rotation + engine.delta_time, math.TAU)
+	}
 
 	aspect :=
 		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
@@ -336,11 +338,8 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 
 	model_from_vertex :=
 		linalg.matrix4_scale_f32(1.0 / max(size.x, size.y, size.z, 0.001)) *
-		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
-
-	if !engine.disable_rotate {
-		model_from_vertex = model_from_vertex * linalg.matrix4_rotate_f32(t, {0, 0, 1})
-	}
+		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
+		linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
 
 	u = Uniforms {
 		screen_from_world = linalg.matrix4_perspective_f32(
