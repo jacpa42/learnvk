@@ -8,7 +8,7 @@ COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-pa
 DEBUG_FLAGS := $(COMMON_FLAGS) -debug
 RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -lto:thin -no-bounds-check
 
-.PHONY: shad r_shad debug release t r rr
+.PHONY: shad r_shad debug release t r rr model
 
 debug: r_shad
 	@echo "debug compile main"
@@ -20,6 +20,9 @@ release: r_shad
 
 t:
 	odin test . -all-packages
+
+model:
+	odin check model -no-entry-point $(DEBUG_FLAGS)
 
 r: debug
 	./$(MAIN_EXE_PATH)

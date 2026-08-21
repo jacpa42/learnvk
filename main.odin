@@ -2,31 +2,26 @@ package learnvk
 
 import "base:runtime"
 import "core:c"
-import "core:fmt"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
 import "core:os"
-import "core:path/filepath"
 import "core:slice"
 import "core:time"
+import "model"
 import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
 //
-// https://docs.vulkan.org/tutorial/latest/08_Loading_models.html
-//
-// TODO: For some reason the textures don't really render properly onto the
-// model. Failure points:
-// 1. The model->bob conversion
-// 2. The way I load the texture with stb
-// 3. The way I define the texture with vulkan
+// /home/jacob/Projects/forfun/learnvk/main.odin:978:1
 //
 
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
-PIPELINE :: Pipeline.model_shader
+PIPELINE :: Pipeline.shader
+
+Model :: model.Bob
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
 ENABLE_DEPTH_TEST :: true
@@ -35,51 +30,74 @@ FRAMES_IN_FLIGHT :: 2
 FRONT_FACE :: vk.FrontFace.CLOCKWISE
 LINE_WIDTH: f32 : 1
 MAX_DYNAMIC_STATE :: 90
+MAX_MESH_TEXTURES :: 64
 MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
 MAX_SWAPCHAIN_IMAGES :: 8
+NUM_MODELS :: len([ModelTag]byte)
 POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
 STAGING_BUFFER_SIZE :: 64 * mem.Megabyte
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
-NUM_MODELS :: len([ModelTag]byte)
+
+to_bytes :: slice.to_bytes
 
 MODEL_PATH := [ModelTag]string {
 	.bmw         = "assets/bmw/bmw.obj",
 	.bunny       = "assets/bunny/bunny.obj",
 	.dragon      = "assets/dragon/dragon.obj",
-	.sponza      = "assets/sponza/sponza.obj",
 	.pinky       = "assets/pinky/pinky.obj",
 	.viking_room = "assets/viking_room/viking_room.obj",
+	.dark_lord   = "assets/darklord/darklord.obj",
 }
 
-TEXTURE_PATH := #partial [ModelTag]cstring {
-	.bmw         = "assets/viking_room/viking_room.png",
-	.bunny       = "assets/viking_room/viking_room.png",
-	.dragon      = "assets/viking_room/viking_room.png",
-	.sponza      = "assets/viking_room/viking_room.png",
-	.pinky       = "assets/viking_room/viking_room.png",
-	.viking_room = "assets/viking_room/viking_room.png",
+BOB_PATH := [ModelTag]string {
+	.bmw         = "assets/bmw/bmw.bob",
+	.bunny       = "assets/bunny/bunny.bob",
+	.dragon      = "assets/dragon/dragon.bob",
+	.pinky       = "assets/pinky/pinky.bob",
+	.viking_room = "assets/viking_room/viking_room.bob",
+	.dark_lord   = "assets/darklord/darklord.bob",
 }
 
 
-MATERIAL_PATH := [ModelTag]string {
+MTL_PATH := [ModelTag]string {
 	.bmw         = "assets/bmw/bmw.mtl",
-	.bunny       = {},
-	.dragon      = {},
-	.sponza      = "assets/sponza/sponza.mtl",
-	.pinky       = {},
+	.bunny       = "assets/bunny/bunny.mtl",
+	.dragon      = "assets/dragon/dragon.mtl",
+	.pinky       = "assets/pinky/pinky.mtl",
 	.viking_room = "assets/viking_room/viking_room.mtl",
+	.dark_lord   = "assets/darklord/darklord.mtl",
 }
+
 
 g_logger: runtime.Logger
+
+Image :: struct {
+	image: vk.Image,
+	view:  vk.ImageView,
+}
+
+MaterialType :: enum {
+	diffuse,
+	emmisive,
+	gloss,
+	normal,
+	specular,
+}
 
 ModelTag :: enum {
 	bmw,
 	bunny,
 	dragon,
-	sponza,
 	pinky,
 	viking_room,
+	dark_lord,
+}
+
+ImageViewTag :: enum {
+	swapchain,
+	model_texture,
+	depth_buffer,
 }
 
 Uniforms :: struct #all_or_none #align (16) {
@@ -114,7 +132,7 @@ Engine :: struct {
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
 	model_loaded:                           bit_set[ModelTag],
-	models:                                 [ModelTag]Bob,
+	models:                                 [ModelTag]Model,
 
 	//
 	// Vulkan stuff
@@ -152,15 +170,15 @@ Engine :: struct {
 	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
 	vk_swapchain_extent:                    vk.Extent2D,
 	vk_image_index:                         u32,
-	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
-	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
+	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]Image,
 
 	//
 	// Descriptor sets
 	//
 	vk_descriptor_pool:                     vk.DescriptorPool,
 	vk_set_layout:                          vk.DescriptorSetLayout,
-	vk_descriptor_sets:                     [ModelTag]vk.DescriptorSet,
+	// one per mesh
+	vk_descriptor_sets:                     [ModelTag][]vk.DescriptorSet,
 
 	//
 	// Uniform Buffers
@@ -178,12 +196,16 @@ Engine :: struct {
 	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
 
 	//
-	// Textures
+	// mesh textures
 	//
-	vk_images:                              [ModelTag]vk.Image,
-	vk_image_views:                         [ModelTag]vk.ImageView,
-	vk_image_memory:                        [ModelTag]vk.DeviceMemory,
-	vk_image_sampler:                       [ModelTag]vk.Sampler,
+	// One for each mesh in each model
+	vk_mesh_images:                         [ModelTag][]struct {
+		image: [MaterialType]vk.Image,
+		view:  [MaterialType]vk.ImageView,
+	},
+	// one allocation for all images
+	vk_mesh_image_memory:                   vk.DeviceMemory,
+	vk_image_sampler:                       [MaterialType]vk.Sampler,
 
 	//
 	// Depth image
@@ -285,47 +307,49 @@ engine_init :: proc(engine: ^Engine) {
 	// Load the models we want to look at
 	//
 
-	temp_model: Model
-	for &model, tag in engine.models {
-
-		obj_path := MODEL_PATH[tag]
-		bob_path := fmt.tprintf("{}/{}.bob", filepath.dir(obj_path), filepath.stem(obj_path))
+	temp_obj: model.Obj
+	temp_mtl: model.Mtl
+	for &m, tag in engine.models {
 
 		err: os.Error
-		model, err = bob_from_path(bob_path)
+		m, err = model.bob_load(BOB_PATH[tag])
 		if err == nil {
 			engine.model_loaded |= {tag}
 			continue
 		}
 
-		log.warnf("Failed to load model, loading first from obj")
-		model_init_or_clear(&temp_model)
+		log.warnf("Failed to load model, loading first from obj/mtl")
+		model.obj_init_or_clear(&temp_obj)
+		model.mtl_init_or_clear(&temp_mtl)
 
 		model_load_ok: bool
 		defer if model_load_ok {
 			engine.model_loaded |= {tag}
 		}
 
-		model_load(&temp_model, MODEL_PATH[tag], &model_load_ok)
+		model.load(&temp_obj, MODEL_PATH[tag], &model_load_ok)
 		assert(model_load_ok)
 
-		// write to bob
-		err = bob_write_from_model(&temp_model, bob_path)
+		model.load(&temp_mtl, MTL_PATH[tag], &model_load_ok)
+		assert(model_load_ok)
+
+		err = model.bob_create_file(&temp_obj, &temp_mtl, BOB_PATH[tag])
 		if err != nil {
-			log.errorf("Failed to write bob file \"{}\": {}", bob_path, err)
+			log.errorf("Failed to create bob file \"{}\": {}", BOB_PATH[tag], err)
 			model_load_ok = false
 			continue
 		}
 
-		model, err = bob_from_path(bob_path)
+		m, err = model.load(BOB_PATH[tag])
 		if err != nil {
-			log.errorf("Failed to load \"{}\": {}", bob_path, err)
+			log.errorf("Failed to load \"{}\": {}", BOB_PATH[tag], err)
 			model_load_ok = false
 			continue
 		}
 	}
 
-	model_destroy(&temp_model)
+	model.destroy(&temp_obj)
+	model.destroy(&temp_mtl)
 
 	//
 	// Initialize GLFW and create our window
@@ -352,16 +376,12 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Load all Vulkan global functions (ie without having an instance yet)
 	//
-	{
-		vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
-	}
+	vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
 
 	//
 	// Create the Vulkan allocator
 	//
-	{
-		engine.vk_alloc = vk_alloc_init()
-	}
+	engine.vk_alloc = vk_alloc_init()
 
 	//
 	// Create the Vulkan Instance
@@ -862,10 +882,8 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	//
 	// Fill the vertex buffers with data
 	//
-
 	for model_tag in engine.model_loaded {
-		model := engine.models[model_tag]
-		defer model_destroy(&engine.models[model_tag])
+		m := engine.models[model_tag]
 
 		for buffer_tag in ModelBuffer {
 			memory_to_upload: []byte
@@ -876,25 +894,25 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			switch buffer_tag {
 
 			case .model_points:
-				memory_to_upload = bob_face_bytes(model)
+				memory_to_upload = to_bytes(model.get_faces(m))
 				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_vertices:
-				memory_to_upload = bob_vertex_bytes(model)
+				memory_to_upload = to_bytes(model.get_vertices(m))
 				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_normals:
-				memory_to_upload = bob_normal_bytes(model)
+				memory_to_upload = to_bytes(model.get_normals(m))
 				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_texcoords:
-				memory_to_upload = bob_texcoord_bytes(model)
+				memory_to_upload = to_bytes(model.get_texcoords(m))
 				size = vk.DeviceSize(len(memory_to_upload))
 				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
@@ -953,10 +971,21 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	TEXTURE_FORMAT :: vk.Format.R8G8B8A8_SRGB
 
 	//
+	// Load all the textures we could possibly need
+	//
+	engine_load_all_mesh_textures(engine)
+
+	// TODO: Add all the texture data to the temporary list, allocate the entire
+	// buffer once on the gpu, send all the data (one by one) to the gpu.
+
+	//
 	// Initialize texture images
 	//
-	for tag in ModelTag {
-		if TEXTURE_PATH[tag] == nil {continue}
+	for tag in engine.model_loaded {
+		engine.vk_mesh_images[tag] = make(
+			type_of(engine.vk_mesh_images[tag]),
+			len(model.get_meshes(engine.models[tag])),
+		)
 
 		//
 		// Load pixels into RAM
@@ -966,7 +995,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		DESIRED_CHANNELS :: 4
 
 		image_data := stb_image.load(
-			TEXTURE_PATH[tag],
+			"./assets/darklord/textures/darklord_mech_helmet.png",
 			&width,
 			&height,
 			&num_channels,
@@ -977,7 +1006,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 
 		defer stb_image.image_free(image_data)
 
-		engine.vk_images[tag], engine.vk_image_memory[tag] = engine_create_image(
+		engine.vk_mesh_images[tag], engine.vk_mesh_image_memory[tag] = engine_create_image(
 			engine = engine,
 			properties = &properties,
 			width = u32(width),
@@ -1011,7 +1040,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			newLayout = .TRANSFER_DST_OPTIMAL,
 			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			image = engine.vk_images[tag],
+			image = engine.vk_mesh_images[tag],
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 
@@ -1039,7 +1068,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		vk.CmdCopyBufferToImage(
 			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 			srcBuffer = engine.vk_transfer_buffer,
-			dstImage = engine.vk_images[tag],
+			dstImage = engine.vk_mesh_images[tag],
 			dstImageLayout = .TRANSFER_DST_OPTIMAL,
 			regionCount = 1,
 			pRegions = &region,
@@ -1056,7 +1085,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			newLayout = .SHADER_READ_ONLY_OPTIMAL,
 			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			image = engine.vk_images[tag],
+			image = engine.vk_mesh_images[tag],
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 
@@ -1080,7 +1109,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	for tag in ModelTag {
 		view_create_info := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
-			image = engine.vk_images[tag],
+			image = engine.vk_mesh_images[tag],
 			viewType = .D2,
 			format = TEXTURE_FORMAT,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
@@ -1126,6 +1155,133 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			&engine.vk_image_sampler[tag],
 		)
 		ensure(result == .SUCCESS)
+	}
+}
+
+engine_load_all_mesh_textures :: proc(engine: ^Engine) {
+	//
+	// Load all the meshes into ram, process them later
+	//
+	// TODO: We could multithread this?
+	//
+	for model in engine.model_loaded {
+		for mesh in bob_meshes(engine.models[model]) {
+		}
+
+		//
+		// Load pixels into RAM
+		//
+		width, height, num_channels: i32
+
+		DESIRED_CHANNELS :: 4
+
+		image_data := stb_image.load(
+			"./assets/darklord/textures/darklord_mech_helmet.png",
+			&width,
+			&height,
+			&num_channels,
+			DESIRED_CHANNELS,
+		)
+		image_data_len := int(width) * int(height) * int(DESIRED_CHANNELS)
+		assert(image_data != nil)
+
+		defer stb_image.image_free(image_data)
+
+		engine.vk_mesh_images[tag], engine.vk_mesh_image_memory[tag] = engine_create_image(
+			engine = engine,
+			properties = &properties,
+			width = u32(width),
+			height = u32(height),
+			format = TEXTURE_FORMAT,
+			usage = {.SAMPLED, .TRANSFER_DST},
+			desired_properties = {.DEVICE_LOCAL},
+		)
+
+		//
+		// Upload first to the staging buffer
+		//
+		assert(image_data_len <= STAGING_BUFFER_SIZE)
+		mem.copy_non_overlapping(dst = transfer_buf_mmap, src = image_data, len = image_data_len)
+
+		//
+		// Execute the command buffer operations to create our image gpu side
+		//
+		cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
+		defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
+
+		//
+		// Setup a memory barrier which syncs the image transition and mem copy
+		// of pixel data. the mem copy happens directly after the memory transition.
+		//
+		image_barrier := vk.ImageMemoryBarrier {
+			sType = .IMAGE_MEMORY_BARRIER,
+			srcAccessMask = {},
+			dstAccessMask = {.TRANSFER_WRITE},
+			oldLayout = .UNDEFINED,
+			newLayout = .TRANSFER_DST_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = engine.vk_mesh_images[tag],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+
+		vk.CmdPipelineBarrier(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcStageMask = {.TOP_OF_PIPE},
+			dstStageMask = {.TRANSFER},
+			dependencyFlags = {},
+			memoryBarrierCount = 0,
+			pMemoryBarriers = nil,
+			bufferMemoryBarrierCount = 0,
+			pBufferMemoryBarriers = nil,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers = &image_barrier,
+		)
+
+		//
+		// Add the copy command
+		//
+		region := vk.BufferImageCopy {
+			imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+			imageExtent = {u32(width), u32(height), 1},
+		}
+
+		vk.CmdCopyBufferToImage(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcBuffer = engine.vk_transfer_buffer,
+			dstImage = engine.vk_mesh_images[tag],
+			dstImageLayout = .TRANSFER_DST_OPTIMAL,
+			regionCount = 1,
+			pRegions = &region,
+		)
+
+		//
+		// Transition the image to be optimal for sampling
+		//
+		image_barrier = vk.ImageMemoryBarrier {
+			sType = .IMAGE_MEMORY_BARRIER,
+			srcAccessMask = {.TRANSFER_WRITE},
+			dstAccessMask = {.SHADER_READ},
+			oldLayout = .TRANSFER_DST_OPTIMAL,
+			newLayout = .SHADER_READ_ONLY_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = engine.vk_mesh_images[tag],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+
+		vk.CmdPipelineBarrier(
+			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			srcStageMask = {.TRANSFER},
+			dstStageMask = {.FRAGMENT_SHADER},
+			dependencyFlags = {},
+			memoryBarrierCount = 0,
+			pMemoryBarriers = nil,
+			bufferMemoryBarrierCount = 0,
+			pBufferMemoryBarriers = nil,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers = &image_barrier,
+		)
 	}
 }
 
@@ -1239,13 +1395,8 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 					range  = vk.DeviceSize(vk.WHOLE_SIZE),
 				}
 
-			case .texture:
+			case .tex_diffuse, .tex_emmisive, .tex_gloss, .tex_normal, .tex_specular:
 				// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
-
-				if engine.vk_image_sampler[model_tag] == 0 ||
-				   engine.vk_image_views[model_tag] == 0 {
-					continue
-				}
 
 				info = vk.DescriptorImageInfo {
 					sampler     = engine.vk_image_sampler[model_tag],
@@ -1286,8 +1437,17 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 
 			switch &t in info {
 			case vk.DescriptorBufferInfo:
+				if t.buffer == 0 || t.range == 0 {
+					continue
+				}
+
 				write_ds.pBufferInfo = &t
+
 			case vk.DescriptorImageInfo:
+				if t.sampler == 0 || t.imageView == 0 {
+					continue
+				}
+
 				write_ds.pImageInfo = &t
 			}
 
@@ -1937,9 +2097,9 @@ engine_destroy :: proc(engine: ^Engine) {
 
 	for tag in ModelTag {
 		vk.DestroySampler(engine.vk_device, engine.vk_image_sampler[tag], &engine.vk_alloc)
-		vk.FreeMemory(engine.vk_device, engine.vk_image_memory[tag], &engine.vk_alloc)
+		vk.FreeMemory(engine.vk_device, engine.vk_mesh_image_memory[tag], &engine.vk_alloc)
 		vk.DestroyImageView(engine.vk_device, engine.vk_image_views[tag], &engine.vk_alloc)
-		vk.DestroyImage(engine.vk_device, engine.vk_images[tag], &engine.vk_alloc)
+		vk.DestroyImage(engine.vk_device, engine.vk_mesh_images[tag], &engine.vk_alloc)
 	}
 
 	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, &engine.vk_alloc)
