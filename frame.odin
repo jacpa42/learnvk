@@ -88,7 +88,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	image_change_layout(
 		cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
-		image = engine.vk_swapchain_images[engine.vk_image_index].image,
+		image = engine.vk_swapchain_images[engine.vk_image_index],
 		old_layout = .UNDEFINED,
 		new_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		src_access = {},
@@ -115,7 +115,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	defer image_change_layout(
 		cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
-		image = engine.vk_swapchain_images[engine.vk_image_index].image,
+		image = engine.vk_swapchain_images[engine.vk_image_index],
 		old_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		new_layout = .PRESENT_SRC_KHR,
 		src_access = {.COLOR_ATTACHMENT_WRITE},
@@ -130,7 +130,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	color_attachment_info := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = engine.vk_swapchain_images[engine.vk_image_index].view,
+		imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
@@ -208,7 +208,6 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
 
-
 		vk.CmdBindDescriptorSets(
 			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 			pipelineBindPoint = .GRAPHICS,
@@ -222,8 +221,8 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 
 		vk.CmdDraw(
 			engine.vk_cmdbufs[engine.vk_frame_index],
-			vertexCount = mesh.face_count,
-			firstVertex = mesh.face_start,
+			vertexCount = mesh.faces_count,
+			firstVertex = mesh.faces_start, // fix this please 
 			instanceCount = 1,
 			firstInstance = 0,
 		)
@@ -337,15 +336,17 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 
 	view_direction := camera_view_dir(&engine.camera)
 
-	corner := engine.models[CURRENT_MODEL].header.corner
-	dim := engine.models[CURRENT_MODEL].header.dim
+	// corner := engine.models[CURRENT_MODEL].header.corner
+	// dim := engine.models[CURRENT_MODEL].header.dim
 
-	model_from_vertex :=
-		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
-		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
-		linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
+	// model_from_vertex :=
+	// linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
+	// linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
+	model_from_vertex := linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
 
 	u = Uniforms {
+		flags             = {.has_diffuse},
+		lightdir          = linalg.normalize([3]f32{1, 1, 1}),
 		screen_from_world = linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
@@ -358,7 +359,6 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 			up = engine.camera.up,
 		),
 		model_from_vertex = model_from_vertex,
-		lightdir          = linalg.normalize([3]f32{1, 1, 1}),
 	}
 
 	return

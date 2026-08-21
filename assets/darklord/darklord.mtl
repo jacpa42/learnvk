@@ -1,0 +1,242 @@
+# Darklord Mech materials
+# Texture convention:
+#   base = albedo/diffuse
+#   _n  = normal
+#   _s  = specular
+#   _g  = gloss/roughness-related map
+#   _e  = emissive
+
+newmtl darklord_mech_arm
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_arm.png
+map_Ks textures/darklord_mech_arm_s.png
+bump textures/darklord_mech_arm_n.png
+map_Ke textures/darklord_mech_arm_e.png
+
+newmtl darklord_mech_arm_rt_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_arm.png
+map_Ks textures/darklord_mech_arm_s.png
+bump textures/darklord_mech_arm_n.png
+map_Ke textures/darklord_mech_arm_e.png
+
+newmtl darklord_mech_cannon
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_cannon.png
+map_Ks textures/darklord_mech_cannon_s.png
+bump textures/darklord_mech_cannon_n.png
+map_Ke textures/darklord_mech_cannon_e.png
+
+newmtl darklord_mech_canopy
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_canopy.png
+map_Ks textures/darklord_mech_canopy_s.png
+bump textures/darklord_mech_canopy_n.png
+map_Ke textures/darklord_mech_canopy_e.png
+
+newmtl darklord_mech_canopy_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_canopy.png
+map_Ks textures/darklord_mech_canopy_s.png
+bump textures/darklord_mech_canopy_n.png
+map_Ke textures/darklord_mech_canopy_e.png
+
+newmtl darklord_mech_hand
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_hand.png
+map_Ks textures/darklord_mech_hand_s.png
+bump textures/darklord_mech_hand_n.png
+map_Ke textures/darklord_mech_hand_e.png
+
+newmtl darklord_mech_hand_rt_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_hand.png
+map_Ks textures/darklord_mech_hand_s.png
+bump textures/darklord_mech_hand_n.png
+map_Ke textures/darklord_mech_hand_e.png
+
+newmtl darklord_mech_helmet
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_helmet.png
+map_Ks textures/darklord_mech_helmet_s.png
+bump textures/darklord_mech_helmet_n.png
+map_Ke textures/darklord_mech_helmet_e.png
+
+newmtl darklord_mech_helmet_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_helmet.png
+map_Ks textures/darklord_mech_helmet_s.png
+bump textures/darklord_mech_helmet_n.png
+map_Ke textures/darklord_mech_helmet_e.png
+
+newmtl darklord_mech_leg
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_leg.png
+map_Ks textures/darklord_mech_leg_s.png
+bump textures/darklord_mech_leg_n.png
+map_Ke textures/darklord_mech_leg_e.png
+
+newmtl darklord_mech_leg_lf_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_leg.png
+map_Ks textures/darklord_mech_leg_s.png
+bump textures/darklord_mech_leg_n.png
+map_Ke textures/darklord_mech_leg_e.png
+
+newmtl darklord_mech_leg_rt_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_leg.png
+map_Ks textures/darklord_mech_leg_s.png
+bump textures/darklord_mech_leg_n.png
+map_Ke textures/darklord_mech_leg_e.png
+
+newmtl darklord_mech_shield
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_shoulder.png
+map_Ks textures/darklord_mech_shoulder_s.png
+bump textures/darklord_mech_shoulder_n.png
+map_Ke textures/darklord_mech_shoulder_e.png
+
+newmtl darklord_mech_shield_buckler
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_shoulder.png
+map_Ks textures/darklord_mech_shoulder_s.png
+bump textures/darklord_mech_shoulder_n.png
+map_Ke textures/darklord_mech_shoulder_e.png
+
+newmtl darklord_mech_shoulder
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_shoulder.png
+map_Ks textures/darklord_mech_shoulder_s.png
+bump textures/darklord_mech_shoulder_n.png
+map_Ke textures/darklord_mech_shoulder_e.png
+
+newmtl darklord_mech_shoulder_rt_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_shoulder.png
+map_Ks textures/darklord_mech_shoulder_s.png
+bump textures/darklord_mech_shoulder_n.png
+map_Ke textures/darklord_mech_shoulder_e.png
+
+newmtl darklord_mech_skirt
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_skirt.png
+map_Ks textures/darklord_mech_skirt_s.png
+bump textures/darklord_mech_skirt_n.png
+
+newmtl darklord_mech_skirt_lf_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_skirt.png
+map_Ks textures/darklord_mech_skirt_s.png
+bump textures/darklord_mech_skirt_n.png
+
+newmtl darklord_mech_skirt_rt_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_skirt.png
+map_Ks textures/darklord_mech_skirt_s.png
+bump textures/darklord_mech_skirt_n.png
+
+newmtl darklord_mech_sword
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.7 0.7 0.7
+Ns 64.0
+map_Kd textures/darklord_mech_arm.png
+map_Ks textures/darklord_mech_arm_s.png
+bump textures/darklord_mech_arm_n.png
+
+newmtl darklord_mech_sword_effect
+Ka 0.0 0.0 0.0
+Kd 1.0 1.0 1.0
+Ks 0.0 0.0 0.0
+Ns 1.0
+d 0.7
+map_Kd textures/darklord_mech_arm_e.png
+map_Ke textures/darklord_mech_arm_e.png
+illum 2
+
+newmtl darklord_mech_sword_hilt
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.6 0.6 0.6
+Ns 48.0
+map_Kd textures/darklord_mech_arm.png
+map_Ks textures/darklord_mech_arm_s.png
+bump textures/darklord_mech_arm_n.png
+
+newmtl darklord_mech_torso
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_torso.png
+map_Ks textures/darklord_mech_torso_s.png
+bump textures/darklord_mech_torso_n.png
+map_Ke textures/darklord_mech_torso_e.png
+
+newmtl darklord_mech_torso_wounds
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.5 0.5 0.5
+Ns 32.0
+map_Kd textures/darklord_mech_torso.png
+map_Ks textures/darklord_mech_torso_s.png
+bump textures/darklord_mech_torso_n.png
+map_Ke textures/darklord_mech_torso_e.png

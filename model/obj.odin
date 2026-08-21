@@ -4,15 +4,17 @@ import "core:fmt"
 import "core:math/bits"
 import "core:mem"
 import "core:os"
-import "core:path/filepath"
 import "core:simd"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
-import "core:time"
+
+// TODO: Make material loading part of the obj loading process!
 
 MAX_POINTS_PER_FACE :: 8
 ENABLE_DEBUG_PRINTING :: false
+DEFAULT_SLICE_ALIGNMENT :: align_of(u32)
+PADDING_BYTES: [8]u8
 
 PointIndex :: enum {
 	vertex,
@@ -29,22 +31,22 @@ TexCoord :: distinct [2]f32
 
 Obj :: struct {
 	// Raw data
-	vertices:     [dynamic]f32, // 3 bytes per vertex
-	normals:      [dynamic]f32, // 3 bytes per vertex
-	texcoords:    [dynamic]f32, // 2 bytes per vertex
+	vertices:  [dynamic]f32, // 3 bytes per vertex
+	normals:   [dynamic]f32, // 3 bytes per vertex
+	texcoords: [dynamic]f32, // 2 bytes per vertex
 
 	// The triangles
-	faces:        [dynamic]Face,
+	faces:     [dynamic]Face,
 
 	// Mesh
-	mesh_strings: [dynamic]byte,
-	meshes:       [dynamic]Mesh,
+	strings:   [dynamic]byte,
+	meshes:    [dynamic]Mesh,
 }
 
-Mesh :: struct #packed {
-	material_index:         u32, // 0 is a stub material
-	name_start, name_count: u16,
-	face_start, face_count: u32,
+Mesh :: struct {
+	material:                 Slice(byte),
+	name:                     Slice(byte),
+	faces_start, faces_count: u32,
 }
 
 @(private = "file")
@@ -61,7 +63,7 @@ obj_init_or_clear :: proc(m: ^Obj) {
 	make_or_clear(&m.vertices)
 	make_or_clear(&m.normals)
 	make_or_clear(&m.texcoords)
-	make_or_clear(&m.mesh_strings)
+	make_or_clear(&m.strings)
 	make_or_clear(&m.faces)
 	make_or_clear(&m.meshes)
 }
@@ -73,23 +75,10 @@ obj_destroy :: proc(m: ^Obj) {
 	delete(m.normals)
 	delete(m.texcoords)
 	delete(m.faces)
-	delete(m.mesh_strings)
+	delete(m.strings)
 }
 
 obj_load :: proc(m: ^Obj, path: string, ok: ^bool = nil) {
-	when true {
-		timer: time.Stopwatch
-		time.stopwatch_start(&timer)
-		defer {
-			time.stopwatch_stop(&timer)
-			fmt.eprintfln(
-				"Loaded obj from file \"{}\" in {}",
-				filepath.base(path),
-				time.stopwatch_duration(timer),
-			)
-		}
-	}
-
 	assert(path != {})
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
@@ -133,26 +122,30 @@ obj_load_obj_memory :: proc(m: ^Obj, data: []byte) -> (ok: bool) {
     obj_append(m, Normal{})
     obj_append(m, TexCoord{})
 
+    current_material: string
+
 	line_iter := string(data)
 	for line in strings.split_lines_iterator(&line_iter) {
 		if len(line) < 2 { continue }
 
         prefix := (u16(line[0])<<8) | u16(line[1])
 
-        noprefix := strings.trim(line, "fvnt ")
+        noprefix := line[strings.index_byte(line, ' ') + 1:]
 
         VERTEX   :: ('v' << 8) | ' '
         NORMAL   :: ('v' << 8) | 'n'
         TEXCOORD :: ('v' << 8) | 't'
         FACE     :: ('f' << 8) | ' '
         MESH     :: ('g' << 8) | ' '
+        NEW_MAT  :: ('u' << 8) | 's'
 
 		switch prefix {
 		case VERTEX:   obj_append(m, parse_vertex_pos(noprefix) or_return)
 		case NORMAL:   obj_append(m, parse_vertex_normal(noprefix) or_return)
 		case TEXCOORD: obj_append(m, parse_vertex_texcoord(noprefix) or_return)
 		case FACE:     obj_append(m, parse_face(noprefix) or_return)
-		case MESH:     obj_append(m, line[2:])
+		case MESH:     obj_append(m, noprefix, current_material)
+		case NEW_MAT:  current_material = noprefix
 		case:          continue
 		}
 	}
@@ -167,14 +160,6 @@ obj_get_all_points :: proc(m: Obj) -> []UnsignedPoint {
 	return ([^]UnsignedPoint)(raw_data(m.faces[:]))[:len]
 }
 
-obj_get_mesh_name :: proc(m: Obj, mesh: Mesh) -> string {
-	return string(m.mesh_strings[mesh.name_start:mesh.name_start + mesh.name_count])
-}
-
-obj_get_mesh_faces :: proc(m: Obj, mesh: Mesh) -> []Face {
-	return m.faces[mesh.face_start:mesh.face_start + mesh.face_count]
-}
-
 obj_append :: proc {
 	obj_append_vertex,
 	obj_append_parsed_face,
@@ -183,28 +168,29 @@ obj_append :: proc {
 	obj_append_mesh,
 }
 
-obj_append_mesh :: proc(m: ^Obj, mesh_name: string) {
-	assert(len(m.mesh_strings) + len(mesh_name) < bits.U16_MAX)
+obj_append_mesh :: proc(m: ^Obj, mesh_name: string, material_name: string) {
+	assert(len(m.strings) + len(mesh_name) < bits.U32_MAX)
 
 	append(
 		&m.meshes,
 		Mesh {
-			name_start = u16(len(m.mesh_strings)),
-			name_count = u16(len(mesh_name)),
-			face_start = u32(len(m.faces)),
-			face_count = 0,
+			name = {u32(len(m.strings[:])), u32(len(mesh_name))},
+			material = {u32(len(m.strings[:]) + len(mesh_name)), u32(len(material_name))},
+			faces_start = u32(len(m.faces[:])),
+			faces_count = 0,
 		},
 	)
 
-	// Must be after the above append call
-	append(&m.mesh_strings, mesh_name)
+	// Must be after the above append call and order matters
+	append(&m.strings, mesh_name)
+	append(&m.strings, material_name)
 }
 
 obj_append_parsed_face :: proc(m: ^Obj, parsed_face: ParsedFace) {
 	assert(m != nil)
 
 	if len(m.meshes) > 0 {
-		m.meshes[len(m.meshes) - 1].face_count += parsed_face.points_len - 2
+		m.meshes[len(m.meshes) - 1].faces_count += parsed_face.points_len - 2
 	}
 
 	//
@@ -224,7 +210,7 @@ obj_append_parsed_face :: proc(m: ^Obj, parsed_face: ParsedFace) {
 
 obj_append_vertex :: proc(m: ^Obj, v: Vertex) {append(&m.vertices, v[0], v[1], v[2])}
 obj_append_normal :: proc(m: ^Obj, n: Normal) {append(&m.normals, n[0], n[1], n[2])}
-obj_append_texcoord :: proc(m: ^Obj, t: TexCoord) {append(&m.texcoords, t[0], 1.0 - t[1])}
+obj_append_texcoord :: proc(m: ^Obj, t: TexCoord) {append(&m.texcoords, t[0], t[1])}
 
 parse_vertex_pos :: #force_inline proc(line: string) -> (v: Vertex, ok: bool) {
 	return parse_vector(Vertex, line)
@@ -304,32 +290,69 @@ parse_face :: proc(line: string) -> (face: ParsedFace, ok: bool) {
 }
 
 BobCreateContext :: struct {
-	size: int,
-	data: [dynamic; 16][]byte,
+	// specify this field to make sure that all slices are aligned to this value
+	align: int,
+	size:  int,
+	data:  [dynamic; 32][]byte,
 }
 
 bobctx_add :: proc(ctx: ^BobCreateContext, data: []$T) -> (slc: Slice(T)) {
+
 	slc.start = u32(ctx.size)
 	slc.size = u32(slice.size(data))
 
 	ctx.size += slice.size(data)
-	assert(ctx.size < bits.U32_MAX)
-
 	append(&ctx.data, slice.to_bytes(data))
+
+	//
+	// Make sure that the slice is aligned
+	//
+	if ctx.align == 0 do ctx.align = DEFAULT_SLICE_ALIGNMENT
+
+	padding := ctx.size % ctx.align; if padding > 0 {
+		ctx.size += padding
+		append(&ctx.data, PADDING_BYTES[:padding])
+	}
+
+	assert(ctx.size < bits.U32_MAX)
 
 	return
 }
 
 bobctx_make :: proc(header: ^BobHeader, obj: ^Obj, mtl: ^Mtl) -> (ctx: BobCreateContext) {
+	ctx.align = align_of(u32)
 
-	bobctx_add(&ctx, mem.ptr_to_bytes(header))
+	_ = bobctx_add(&ctx, mem.ptr_to_bytes(header))
 
+
+	//
+	// Materials
+	//
 	header.mtl_strings = bobctx_add(&ctx, mtl.strings[:])
+
+	// offset the strings so it points to the data in our bob
+	for &material in mtl.materials[:] {
+		for &mat in material.strings {
+			mat.start += header.mtl_strings.start
+		}
+	}
 	header.mtllist = bobctx_add(&ctx, mtl.materials[:])
 
-	header.mesh_strings = bobctx_add(&ctx, obj.mesh_strings[:])
+	//
+	// Meshes
+	//
+	header.mesh_strings = bobctx_add(&ctx, obj.strings[:])
+
+	// offset the strings so it points to the data in our bob
+	for &mesh in obj.meshes[:] {
+		mesh.material.start += header.mesh_strings.start
+		mesh.name.start += header.mesh_strings.start
+	}
 	header.meshes = bobctx_add(&ctx, obj.meshes[:])
 
+	//
+	// Model data
+	//
 	header.vertices = bobctx_add(&ctx, obj.vertices[:])
 	header.normals = bobctx_add(&ctx, obj.normals[:])
 	header.texcoords = bobctx_add(&ctx, obj.texcoords[:])

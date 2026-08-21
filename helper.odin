@@ -63,6 +63,7 @@ engine_create_image :: proc(
 	desired_properties: vk.MemoryPropertyFlags,
 ) -> (
 	image: vk.Image,
+	view: vk.ImageView,
 	memory: vk.DeviceMemory,
 ) {
 	create_info := vk.ImageCreateInfo {
@@ -109,12 +110,22 @@ engine_create_image :: proc(
 	)
 	ensure(result == .SUCCESS)
 
+
+	view_create_info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		image = image,
+		viewType = .D2,
+		format = format,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+	result = vk.CreateImageView(engine.vk_device, &view_create_info, &engine.vk_alloc, &view)
+	ensure(result == .SUCCESS)
+
 	return
 }
 
 engine_create_buffer :: proc(
 	engine: ^Engine,
-	properties: ^vk.PhysicalDeviceMemoryProperties,
 	size: vk.DeviceSize,
 	usage: vk.BufferUsageFlags,
 	desired_properties: vk.MemoryPropertyFlags,
@@ -135,7 +146,11 @@ engine_create_buffer :: proc(
 	requirements: vk.MemoryRequirements
 	vk.GetBufferMemoryRequirements(engine.vk_device, buffer, &requirements)
 
-	memory_type_index := device_get_memory_type_index(properties, requirements, desired_properties)
+	memory_type_index := device_get_memory_type_index(
+		&engine.vk_physical_device_memory_properties,
+		requirements,
+		desired_properties,
+	)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,

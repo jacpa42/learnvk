@@ -1,7 +1,6 @@
-enum Flag : uint16_t {
+enum Flag : uint {
     has_diffuse,
     has_emmisive,
-    has_gloss,
     has_normal,
     has_specular,
 }
@@ -19,7 +18,7 @@ struct VertexOutput {
 };
 
 struct UniformBuffer {
-    uint16_t flags; // Bit set of Flag
+    uint     flags; // Bit set of Flag
     float3   lightdir;
     float4x4 screen_from_world;
     float4x4 world_from_model;
@@ -35,7 +34,6 @@ StructuredBuffer<float> buf_texcoord;
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;
 Sampler2D tex_emmisive;
-Sampler2D tex_gloss;
 Sampler2D tex_normal;
 Sampler2D tex_specular;
 
@@ -70,7 +68,7 @@ VertexOutput vertex(
 
 [ForceInline]
 bool contains(uint flags, Flag f) {
-    return (flags & (1 << uint16_t(f))) > 0;
+    return (flags & (1 << uint(f))) > 0;
 }
 
 

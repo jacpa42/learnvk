@@ -2,6 +2,7 @@ package model
 
 import "core:log"
 import "core:os"
+import "core:slice"
 import "core:time"
 
 Bob :: struct {
@@ -32,7 +33,7 @@ bob_destroy :: proc(bob: ^Bob) {
 	bob.data = nil
 }
 
-bob_load :: proc(path: string, allocator := context.allocator) -> (bob: Bob, err: os.Error) {
+bob_load :: proc(bob: ^Bob, path: string, ok: ^bool = nil) {
 	sw: time.Stopwatch
 	time.stopwatch_start(&sw)
 	defer {
@@ -40,15 +41,57 @@ bob_load :: proc(path: string, allocator := context.allocator) -> (bob: Bob, err
 		log.infof("Loaded \"{}\" in {}", path, time.stopwatch_duration(sw))
 	}
 
-	bob.data = os.read_entire_file(path, allocator) or_return
+	oserr: os.Error
+	bob.data, oserr = os.read_entire_file(path, context.temp_allocator)
+
+	if oserr != nil {
+		if ok != nil do ok^ = false
+		return
+	}
+
 	bob.header = (^BobHeader)(raw_data(bob.data))^
 
-	err = nil
+	if ok != nil do ok^ = true
 	return
 }
 
-bob_get_slice :: proc(bob: Bob, slc: Slice($T)) -> (data: []T) {
-	assert(slc.size % size_of(T) == 0)
-	data = ([^]T)(&bob.data[slc.start])[:slc.size / size_of(T)]
+//
+// Gets the slice data from the source buffer
+//
+get_slice_data :: proc "contextless" (slc: Slice($T), source: []$E) -> (data: []T) {
+	assert_contextless(int(slc.start + slc.size) <= slice.size(source))
+
+	bytes := slice.to_bytes(source)
+	data = ([^]T)(&bytes[slc.start])[:slc.size / size_of(T)]
 	return
 }
+
+get_slice_string :: proc "contextless" (slc: Slice(byte), source: []byte) -> (data: string) {
+	assert_contextless(int(slc.start + slc.size) <= slice.size(source))
+
+	data = string(source[slc.start:slc.start + slc.size])
+	return
+}
+
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//

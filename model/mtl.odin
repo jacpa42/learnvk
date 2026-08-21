@@ -1,25 +1,32 @@
 package model
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strconv"
 import "core:strings"
 
 starts_with := strings.starts_with
 
+ENABLE_LOG :: true
+
 Mtl :: struct {
 	strings:   [dynamic]byte,
 	materials: [dynamic]Material,
 }
 
+MaterialString :: enum {
+	name,
+	map_Kd, // diffuse
+	map_Ks, // specular
+	map_Ke, // emissive
+	map_Ka, // ambient
+	map_d, // alpha / dissolve
+	map_bump, // normal
+}
+
 Material :: struct {
-	name:               Slice(byte),
-	map_Kd:             Slice(byte), // diffuse
-	map_Ks:             Slice(byte), // specular
-	map_Ke:             Slice(byte), // emissive
-	map_Ka:             Slice(byte), // ambient
-	map_d:              Slice(byte), // alpha / dissolve
-	map_bump:           Slice(byte), // normal
+	strings:            [MaterialString]Slice(byte),
 	illum:              Illumination,
 	Ns, Ni, d, Tr:      f32,
 	Tf, Ka, Kd, Ks, Ke: [3]f32,
@@ -39,18 +46,6 @@ Illumination :: enum u32 {
 	Casts_shadows_onto_invisible_surfaces                              = 10,
 }
 
-mtl_offset_strings :: proc(mtl: ^Mtl, #any_int offset: u32) {
-	for &material in mtl.materials {
-		material.name.start += offset
-		material.map_Kd.start += offset
-		material.map_Ks.start += offset
-		material.map_Ke.start += offset
-		material.map_Ka.start += offset
-		material.map_d.start += offset
-		material.map_bump.start += offset
-	}
-}
-
 mtl_init_or_clear :: proc(m: ^Mtl) {
 	assert(m != nil)
 	make_or_clear(&m.materials)
@@ -65,7 +60,10 @@ mtl_destroy :: proc(m: ^Mtl) {
 }
 
 mtl_load :: proc(mtl: ^Mtl, path: string, ok: ^bool = nil) {
-	assert(path != {})
+	if len(path) == 0 {
+		if ok != nil do ok^ = false
+		return
+	}
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
 	if oserr != nil {
@@ -76,11 +74,13 @@ mtl_load :: proc(mtl: ^Mtl, path: string, ok: ^bool = nil) {
 	fmt.eprintfln("Loading \"{}\" ({} Mib)", path, f32(len(raw)) / (1024 * 1024))
 
 	load_mem_ok := mtl_load_memory(mtl, raw)
+	if !load_mem_ok {
+		if ok != nil do ok^ = false
+		return
+	}
 
-	if ok != nil do ok^ = load_mem_ok
-
+	if ok != nil do ok^ = true
 	return
-
 }
 
 mtl_load_memory :: proc(m: ^Mtl, data: []byte) -> (ok: bool) {
@@ -97,7 +97,7 @@ mtl_load_memory :: proc(m: ^Mtl, data: []byte) -> (ok: bool) {
 
 		if starts_with(line, "newmtl") {
 			mat = mtl_new_material(m)
-			mat.name = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.name] = mtl_append_string(m, mtl_parse_string(line))
 
 			//
 			// Float values
@@ -148,22 +148,22 @@ mtl_load_memory :: proc(m: ^Mtl, data: []byte) -> (ok: bool) {
 			//
 
 		} else if starts_with(line, "map_Ka") {
-			mat.map_Ka = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_Ka] = mtl_append_string(m, mtl_parse_string(line))
 
 		} else if starts_with(line, "map_Ks") {
-			mat.map_Ks = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_Ks] = mtl_append_string(m, mtl_parse_string(line))
 
 		} else if starts_with(line, "map_Ke") {
-			mat.map_Ke = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_Ke] = mtl_append_string(m, mtl_parse_string(line))
 
 		} else if starts_with(line, "map_Kd") {
-			mat.map_Kd = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_Kd] = mtl_append_string(m, mtl_parse_string(line))
 
 		} else if starts_with(line, "map_d") {
-			mat.map_d = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_d] = mtl_append_string(m, mtl_parse_string(line))
 
 		} else if starts_with(line, "map_bump") || starts_with(line, "bump") {
-			mat.map_bump = mtl_append_string(m, mtl_parse_string(line))
+			mat.strings[.map_bump] = mtl_append_string(m, mtl_parse_string(line))
 		}
 
 	}
@@ -189,6 +189,7 @@ mtl_append_string :: proc(mtl: ^Mtl, data: string) -> (str: Slice(byte)) {
 mtl_parse_string :: proc(line: string) -> (o: string) {
 	space := strings.index_byte(line, ' ')
 	if space == -1 {
+		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": string empty", line)}
 		return
 	}
 
@@ -200,6 +201,9 @@ mtl_parse_f32 :: proc(line: string) -> (v: f32, ok: bool) {
 	space := strings.index_byte(line, ' ')
 	if space == -1 {
 		ok = false
+
+		when ENABLE_LOG {log.warnf("Failed to parse \"{}\"", line)}
+
 		return
 	}
 
@@ -207,6 +211,7 @@ mtl_parse_f32 :: proc(line: string) -> (v: f32, ok: bool) {
 }
 
 mtl_parse_3_f32 :: proc(line: string) -> (v: [3]f32, ok: bool) {
+	when ENABLE_LOG do defer if !ok do log.warnf("Failed to parse \"{}\"", line)
 
 	space0 := strings.index_byte(line, ' ')
 	space1 := space0 + 1 + strings.index_byte(line[space0 + 1:], ' ')
@@ -217,12 +222,16 @@ mtl_parse_3_f32 :: proc(line: string) -> (v: [3]f32, ok: bool) {
 		return
 	}
 
-	v = {
-		strconv.parse_f32(line[space0 + 1:space1]) or_return,
-		strconv.parse_f32(line[space1 + 1:space2]) or_return,
-		strconv.parse_f32(line[space2 + 1:]) or_return,
-	}
+	v0 := line[space0 + 1:space1]
+	v[0] = strconv.parse_f32(v0) or_return
 
+	v1 := line[space1 + 1:space2]
+	v[1] = strconv.parse_f32(v1) or_return
+
+	v2 := line[space2 + 1:]
+	v[2] = strconv.parse_f32(v2) or_return
+
+	ok = true
 	return
 }
 
@@ -230,12 +239,18 @@ mtl_parse_illum :: proc(line: string) -> (illum: Illumination, ok: bool) {
 	space := strings.index_byte(line, ' ')
 	if space == -1 {
 		ok = false
+
+		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": no space found", line)}
+
 		return
 	}
 
 	bytes := transmute([]byte)(line[space + 1:])
 	if len(bytes) == 0 {
 		ok = false
+
+		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": empty after space", line)}
+
 		return
 	}
 
@@ -249,3 +264,4 @@ mtl_parse_illum :: proc(line: string) -> (illum: Illumination, ok: bool) {
 	ok = true
 	return
 }
+
