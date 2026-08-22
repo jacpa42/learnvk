@@ -192,6 +192,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Bind vertex buffers
 	//
+	assert(CURRENT_MODEL in engine.model_loaded)
 	current_model := engine.models[CURRENT_MODEL]
 
 	pOffsets: vk.DeviceSize = 0
@@ -207,7 +208,6 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	// Draw all our meshes
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
-
 		vk.CmdBindDescriptorSets(
 			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
 			pipelineBindPoint = .GRAPHICS,
@@ -222,11 +222,10 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		vk.CmdDraw(
 			engine.vk_cmdbufs[engine.vk_frame_index],
 			vertexCount = mesh.faces_count,
-			firstVertex = mesh.faces_start, // fix this please 
+			firstVertex = mesh.faces_start,
 			instanceCount = 1,
 			firstInstance = 0,
 		)
-
 	}
 }
 
@@ -336,13 +335,13 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 
 	view_direction := camera_view_dir(&engine.camera)
 
-	// corner := engine.models[CURRENT_MODEL].header.corner
-	// dim := engine.models[CURRENT_MODEL].header.dim
+	corner := engine.models[CURRENT_MODEL].header.corner
+	dim := engine.models[CURRENT_MODEL].header.dim
 
-	// model_from_vertex :=
-	// linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
-	// linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
-	model_from_vertex := linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
+	model_from_vertex :=
+		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
+		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
+		linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
 
 	u = Uniforms {
 		flags             = {.has_diffuse},

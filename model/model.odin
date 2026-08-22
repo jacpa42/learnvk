@@ -3,13 +3,11 @@ package model
 destroy :: proc {
 	obj_destroy,
 	bob_destroy,
-	mtl_destroy,
 }
 
 load :: proc {
 	bob_load,
 	obj_load,
-	mtl_load,
 }
 
 get_material_string :: proc {
@@ -37,7 +35,8 @@ get_meshes_bob :: proc(bob: Bob) -> []Mesh {
 get_mesh_name :: proc {
 	obj_get_mesh_name,
 	bob_get_mesh_name,
-	get_mesh_name_bob_index,
+	bob_get_mesh_name_index,
+	obj_get_mesh_name_index,
 }
 obj_get_mesh_name :: proc(obj: Obj, mesh: Mesh) -> string {
 	return get_slice_string(mesh.name, obj.strings[:])
@@ -45,8 +44,11 @@ obj_get_mesh_name :: proc(obj: Obj, mesh: Mesh) -> string {
 bob_get_mesh_name :: proc(bob: Bob, mesh: Mesh) -> string {
 	return get_slice_string(mesh.name, bob.data)
 }
-get_mesh_name_bob_index :: proc(bob: Bob, mesh_index: int) -> string {
+bob_get_mesh_name_index :: proc(bob: Bob, mesh_index: int) -> string {
 	return get_slice_string(get_meshes(bob)[mesh_index].name, bob.data)
+}
+obj_get_mesh_name_index :: proc(obj: Obj, mesh_index: int) -> string {
+	return get_slice_string(get_meshes(obj)[mesh_index].name, obj.strings[:])
 }
 
 get_faces :: proc {
@@ -101,27 +103,31 @@ bob_get_material_list :: proc(bob: Bob) -> []Material {
 	return get_slice_data(bob.header.mtllist, bob.data)
 }
 
-get_material :: proc {
+find_material_by_mesh :: proc {
 	bob_find_material_mesh,
-	bob_get_material_by_name,
+	obj_find_material_mesh,
 }
-bob_find_material_mesh :: proc(bob: Bob, mesh: Mesh) -> (m: Material, found: bool) {
-	return bob_get_material_by_name(bob, get_slice_string(mesh.material, bob.data))
-}
-bob_get_material_by_name :: proc(bob: Bob, name: string) -> (m: Material, found: bool) {
-	if len(name) == 0 {
-		found = false
-		return
+obj_find_material_mesh :: proc(obj: Obj, mesh: Mesh) -> (m: Material, found: bool) {
+	name := get_slice_string(mesh.material, obj.strings[:])
+
+	for material in obj.materials {
+		if get_slice_string(material.strings[.name], obj.strings[:]) == name {
+			return material, true
+		}
 	}
 
-	for material in bob_get_material_list(bob) {
+	return {}, false
+}
+bob_find_material_mesh :: proc(bob: Bob, mesh: Mesh) -> (m: Material, found: bool) {
+	name := get_slice_string(mesh.material, bob.data)
+
+	for material in get_material_list(bob) {
 		if get_slice_string(material.strings[.name], bob.data) == name {
 			return material, true
 		}
 	}
 
-	found = false
-	return
+	return {}, false
 }
 
 //

@@ -11,8 +11,8 @@ starts_with := strings.starts_with
 ENABLE_LOG :: true
 
 Mtl :: struct {
-	strings:   [dynamic]byte,
-	materials: [dynamic]Material,
+	strings:   ^[dynamic]byte,
+	materials: ^[dynamic]Material,
 }
 
 MaterialString :: enum {
@@ -46,20 +46,7 @@ Illumination :: enum u32 {
 	Casts_shadows_onto_invisible_surfaces                              = 10,
 }
 
-mtl_init_or_clear :: proc(m: ^Mtl) {
-	assert(m != nil)
-	make_or_clear(&m.materials)
-	make_or_clear(&m.strings)
-}
-
-mtl_destroy :: proc(m: ^Mtl) {
-	assert(m != nil)
-	defer m^ = {}
-	delete(m.materials)
-	delete(m.strings)
-}
-
-mtl_load :: proc(mtl: ^Mtl, path: string, ok: ^bool = nil) {
+mtl_load :: proc(mtl: Mtl, path: string, ok: ^bool = nil) {
 	if len(path) == 0 {
 		if ok != nil do ok^ = false
 		return
@@ -83,8 +70,7 @@ mtl_load :: proc(mtl: ^Mtl, path: string, ok: ^bool = nil) {
 	return
 }
 
-mtl_load_memory :: proc(m: ^Mtl, data: []byte) -> (ok: bool) {
-	mtl_init_or_clear(m)
+mtl_load_memory :: proc(m: Mtl, data: []byte) -> (ok: bool) {
 
 	mat: ^Material
 
@@ -172,17 +158,17 @@ mtl_load_memory :: proc(m: ^Mtl, data: []byte) -> (ok: bool) {
 	return
 }
 
-mtl_new_material :: proc(mtl: ^Mtl) -> ^Material {
+mtl_new_material :: proc(mtl: Mtl) -> ^Material {
 	idx := len(mtl.materials)
-	append_nothing(&mtl.materials)
+	append_nothing(mtl.materials)
 	return &mtl.materials[idx]
 }
 
-mtl_append_string :: proc(mtl: ^Mtl, data: string) -> (str: Slice(byte)) {
+mtl_append_string :: proc(mtl: Mtl, data: string) -> (str: Slice(byte)) {
 	str.start = u32(len(mtl.strings))
 	str.size = u32(len(data))
 
-	append(&mtl.strings, data)
+	append(mtl.strings, data)
 	return
 }
 

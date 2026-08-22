@@ -5,7 +5,6 @@ import "core:c"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
-import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
@@ -15,15 +14,12 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-//
-// /home/jacob/Projects/forfun/learnvk/frame.odin:225:4
-//
-
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
+LOAD_MODELS := bit_set[ModelTag]{.viking_room}
 PIPELINE :: Pipeline.shader
 
-Model :: model.Obj
+Bob :: model.Bob
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
 ENABLE_DEPTH_TEST :: true
@@ -142,7 +138,7 @@ Engine :: struct {
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
 	model_loaded:                           bit_set[ModelTag],
-	models:                                 [ModelTag]Model,
+	models:                                 [ModelTag]Bob,
 
 	//
 	// Vulkan stuff
@@ -317,50 +313,44 @@ engine_init :: proc(engine: ^Engine) {
 	//
 
 	temp_obj: model.Obj
-	temp_mtl: model.Mtl
-	for &m, tag in engine.models {
+	for tag in LOAD_MODELS {
 
 		// TODO: Handle when the model doesnt have a material:
 		if len(MTL_PATH[tag]) == 0 {continue}
 
 		load_ok: bool
-		model.load(&m, BOB_PATH[tag], &load_ok)
+		model.load(&engine.models[tag], BOB_PATH[tag], &load_ok)
 		if load_ok {
 			engine.model_loaded |= {tag}
 			continue
 		}
 
-		// log.warnf("Failed to load model, loading first from obj/mtl")
-		// model.obj_init_or_clear(&temp_obj)
-		// model.mtl_init_or_clear(&temp_mtl)
-		//
-		// model.load(&temp_obj, MODEL_PATH[tag], &load_ok)
-		// assert(load_ok)
-		//
+		log.warnf("Failed to load model, loading first from obj/mtl")
+		model.obj_init_or_clear(&temp_obj)
+
+		model.load(&temp_obj, MODEL_PATH[tag], &load_ok)
+		assert(load_ok)
+
 		// We don't care if it failed here, stub is okay
-		//
-		// model.load(&temp_mtl, MTL_PATH[tag], &load_ok)
-		// assert(load_ok)
 
-		// err = model.bob_create_file(&temp_obj, &temp_mtl, BOB_PATH[tag])
-		// if err != nil {
-		// 	log.errorf("Failed to create bob file \"{}\": {}", BOB_PATH[tag], err)
-		// 	load_ok = false
-		// 	continue
-		// }
-		//
-		// m, err = model.load(BOB_PATH[tag])
-		// if err != nil {
-		// 	log.errorf("Failed to load \"{}\": {}", BOB_PATH[tag], err)
-		// 	load_ok = false
-		// 	continue
-		// }
+		err := model.bob_create_file(&temp_obj, BOB_PATH[tag])
+		if err != nil {
+			log.errorf("Failed to create bob file \"{}\": {}", BOB_PATH[tag], err)
+			load_ok = false
+			continue
+		}
 
-		// engine.model_loaded |= {tag}
+		model.load(&engine.models[tag], BOB_PATH[tag], &load_ok)
+		if !load_ok {
+			log.errorf("Failed to load \"{}\"", BOB_PATH[tag])
+			load_ok = false
+			continue
+		}
+
+		engine.model_loaded |= {tag}
 	}
 
 	model.destroy(&temp_obj)
-	model.destroy(&temp_mtl)
 
 	//
 	// Initialize GLFW and create our window
@@ -879,8 +869,6 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	)
 	ensure(result == .SUCCESS)
 
-	defer vk.UnmapMemory(engine.vk_device, engine.vk_transfer_buffer_memory)
-
 	//
 	// Fill the vertex buffers with data
 	//
@@ -1022,7 +1010,6 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	}
 }
 
-
 engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh_index: int) {
 	//
 	// Try to find the material type for this mesh
@@ -1030,7 +1017,7 @@ engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh
 	m := engine.models[model_tag]
 	mesh := model.get_meshes(m)[mesh_index]
 
-	mtl, found := model.get_material(m, mesh)
+	mtl, found := model.find_material_by_mesh(m, mesh)
 	if !found {
 		log.warnf("Failed to find material for \"{}.{}\"", model_tag, model.get_mesh_name(m, mesh))
 		return
@@ -1100,6 +1087,9 @@ engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh
 		image_data := stb_image.load(cpath, &width, &height, &num_channels, desired_channels)
 		image_data_len := int(width) * int(height) * int(desired_channels)
 		assert(image_data != nil)
+
+		log.infof("Loaded {} for texture {}.{}", cpath, model_tag, material_type)
+		log.infof("{} || w {} || h {} || c {}", cpath, width, height, desired_channels)
 
 		//
 		// Create the image with its memory
@@ -1257,16 +1247,16 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		// Get the bindings from our handy shader processing tool
 		//
 		#assert(PIPELINE == .shader)
-		descriptor_set_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
+		create_info := vk.DescriptorSetLayoutCreateInfo {
 			sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			flags        = {},
-			bindingCount = len(ShaderBinding),
+			bindingCount = len(SHADER_PIPELINE_SET_LAYOUTS),
 			pBindings    = &SHADER_PIPELINE_SET_LAYOUTS[ShaderBinding(0)],
 		}
 
 		result = vk.CreateDescriptorSetLayout(
 			engine.vk_device,
-			&descriptor_set_layout_create_info,
+			&create_info,
 			&engine.vk_alloc,
 			&engine.vk_set_layout,
 		)

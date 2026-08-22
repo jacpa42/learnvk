@@ -1,15 +1,12 @@
 # 3ds Max Wavefront OBJ Exporter v0.97b - (c)2007 guruware
 # File Created: 20.08.2010 18:13:43
 
-newmtl mesh_all1_Texture1_0
-	Ns 10.0000
-	Ni 1.5000
-	d 1.0000
-	Tr 0.0000
-	Tf 1.0000 1.0000 1.0000
-	illum 2
+newmtl room
 	Ka 1 1 1
 	Kd 1 1 1
-	Ks 0.0000 0.0000 0.0000
-	Ke 0.0000 0.0000 0.0000
+	Ni 1.5
+	Ns 10
+	Tf 1 1 1
+	d 1
+	illum 2
 	map_Kd viking_room.png

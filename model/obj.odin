@@ -4,12 +4,12 @@ import "core:fmt"
 import "core:math/bits"
 import "core:mem"
 import "core:os"
+import "core:path/filepath"
 import "core:simd"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
-
-// TODO: Make material loading part of the obj loading process!
+import "core:time"
 
 MAX_POINTS_PER_FACE :: 8
 ENABLE_DEBUG_PRINTING :: false
@@ -30,6 +30,9 @@ Normal :: distinct [3]f32
 TexCoord :: distinct [2]f32
 
 Obj :: struct {
+	// essentially an arena for our string data
+	strings:   [dynamic]byte,
+
 	// Raw data
 	vertices:  [dynamic]f32, // 3 bytes per vertex
 	normals:   [dynamic]f32, // 3 bytes per vertex
@@ -38,9 +41,9 @@ Obj :: struct {
 	// The triangles
 	faces:     [dynamic]Face,
 
-	// Mesh
-	strings:   [dynamic]byte,
+	// Meshes and materials
 	meshes:    [dynamic]Mesh,
+	materials: [dynamic]Material,
 }
 
 Mesh :: struct {
@@ -58,6 +61,43 @@ ParsedFace :: struct {
 	},
 }
 
+// odinfmt: disable
+obj_dump_info :: proc(obj: ^Obj) {
+	info :: fmt.eprintf
+
+	info("{} faces     : len={} size={}\n", rawptr(obj), len(obj.faces), slice.size(obj.faces[:]))
+	info("{} vertices  : len={} size={}\n", rawptr(obj), len(obj.vertices), slice.size(obj.vertices[:]))
+	info("{} normals   : len={} size={}\n", rawptr(obj), len(obj.normals), slice.size(obj.normals[:]))
+	info("{} texcoords : len={} size={}\n", rawptr(obj), len(obj.texcoords), slice.size(obj.texcoords[:]))
+	info("{} strings   : {}\n", rawptr(obj), string(obj.strings[:]))
+
+	for mesh, i in obj.meshes {
+		name := get_slice_string(mesh.name, obj.strings[:])
+		material := get_slice_string(mesh.material, obj.strings[:])
+		num_faces := mesh.faces_count
+		info(
+			"{} mesh {} : name={} material={} num_faces={}\n",
+			rawptr(obj),
+			i,
+			name,
+			material,
+			num_faces,
+		)
+	}
+
+	for m, i in obj.materials {
+		info("{} material {} : ", rawptr(obj), i)
+		for slc, tag in m.strings {
+			value := get_slice_string(slc, obj.strings[:])
+			if len(value) > 0 {
+				info("{}={} ", tag, get_slice_string(slc, obj.strings[:]))
+			}
+		}
+		info("\n")
+	}
+}
+// odinfmt: enable
+
 obj_init_or_clear :: proc(m: ^Obj) {
 	assert(m != nil)
 	make_or_clear(&m.vertices)
@@ -66,6 +106,7 @@ obj_init_or_clear :: proc(m: ^Obj) {
 	make_or_clear(&m.strings)
 	make_or_clear(&m.faces)
 	make_or_clear(&m.meshes)
+	make_or_clear(&m.materials)
 }
 
 obj_destroy :: proc(m: ^Obj) {
@@ -76,10 +117,15 @@ obj_destroy :: proc(m: ^Obj) {
 	delete(m.texcoords)
 	delete(m.faces)
 	delete(m.strings)
+	delete(m.materials)
 }
 
-obj_load :: proc(m: ^Obj, path: string, ok: ^bool = nil) {
+obj_load :: proc(obj: ^Obj, path: string, ok: ^bool = nil) {
 	assert(path != {})
+
+	timer: time.Stopwatch
+	time.stopwatch_start(&timer)
+
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
 	if oserr != nil {
@@ -87,11 +133,23 @@ obj_load :: proc(m: ^Obj, path: string, ok: ^bool = nil) {
 		return
 	}
 
-	fmt.eprintfln("Loading \"{}\" ({} Mib)", path, f32(len(raw)) / (1024 * 1024))
+	obj_load_obj_memory_ok := obj_load_memory(obj, path, raw)
+	if !obj_load_obj_memory_ok {
+		if ok != nil do ok^ = false
+		return
+	}
 
-	obj_load_obj_memory_ok := obj_load_obj_memory(m, raw)
+	time.stopwatch_stop(&timer)
+	fmt.eprintfln(
+		"Loaded \"{}\" ({} Mib) in {}",
+		path,
+		f32(len(raw)) / (1024 * 1024),
+		time.stopwatch_duration(timer),
+	)
 
-	if ok != nil do ok^ = obj_load_obj_memory_ok
+	if ok != nil do ok^ = true
+
+	when ODIN_DEBUG do obj_dump_info(obj)
 
 	return
 }
@@ -115,7 +173,7 @@ obj_get_bounding_box :: proc(m: Obj) -> (corner, size: [3]f32) {
 }
 
 // odinfmt: disable
-obj_load_obj_memory :: proc(m: ^Obj, data: []byte) -> (ok: bool) {
+obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (ok: bool) {
 
     // Always append some default values
     obj_append(m, Vertex{})
@@ -136,7 +194,9 @@ obj_load_obj_memory :: proc(m: ^Obj, data: []byte) -> (ok: bool) {
         NORMAL   :: ('v' << 8) | 'n'
         TEXCOORD :: ('v' << 8) | 't'
         FACE     :: ('f' << 8) | ' '
-        MESH     :: ('g' << 8) | ' '
+        OBJECT   :: ('o' << 8) | ' '
+        GROUP    :: ('g' << 8) | ' '
+        MTLLIB   :: ('m' << 8) | 't'
         NEW_MAT  :: ('u' << 8) | 's'
 
 		switch prefix {
@@ -144,7 +204,9 @@ obj_load_obj_memory :: proc(m: ^Obj, data: []byte) -> (ok: bool) {
 		case NORMAL:   obj_append(m, parse_vertex_normal(noprefix) or_return)
 		case TEXCOORD: obj_append(m, parse_vertex_texcoord(noprefix) or_return)
 		case FACE:     obj_append(m, parse_face(noprefix) or_return)
-		case MESH:     obj_append(m, noprefix, current_material)
+		case OBJECT:   obj_append_mesh(m, noprefix, current_material)
+		case GROUP:    obj_append_mesh(m, noprefix, current_material)
+		case MTLLIB:   obj_load_mtl(m, obj_path, noprefix) or_return
 		case NEW_MAT:  current_material = noprefix
 		case:          continue
 		}
@@ -158,6 +220,23 @@ obj_load_obj_memory :: proc(m: ^Obj, data: []byte) -> (ok: bool) {
 obj_get_all_points :: proc(m: Obj) -> []UnsignedPoint {
 	len := len(m.faces) / len(Face)
 	return ([^]UnsignedPoint)(raw_data(m.faces[:]))[:len]
+}
+
+obj_load_mtl :: proc(m: ^Obj, obj_path, mtl_rel_path: string) -> (ok: bool) {
+	mtl_path, err := filepath.join(
+		[]string{filepath.dir(obj_path), mtl_rel_path},
+		context.temp_allocator,
+	)
+	if err != nil do return false
+
+	mtl := Mtl {
+		strings   = &m.strings,
+		materials = &m.materials,
+	}
+
+	mtl_load(mtl, mtl_path, &ok)
+
+	return
 }
 
 obj_append :: proc {
@@ -319,40 +398,34 @@ bobctx_add :: proc(ctx: ^BobCreateContext, data: []$T) -> (slc: Slice(T)) {
 	return
 }
 
-bobctx_make :: proc(header: ^BobHeader, obj: ^Obj, mtl: ^Mtl) -> (ctx: BobCreateContext) {
+bobctx_make :: proc(header: ^BobHeader, obj: ^Obj) -> (ctx: BobCreateContext) {
 	ctx.align = align_of(u32)
 
 	_ = bobctx_add(&ctx, mem.ptr_to_bytes(header))
 
 
 	//
-	// Materials
+	// We need to be careful with our strings
 	//
-	header.mtl_strings = bobctx_add(&ctx, mtl.strings[:])
+	header.strings = bobctx_add(&ctx, obj.strings[:])
 
-	// offset the strings so it points to the data in our bob
-	for &material in mtl.materials[:] {
+	for &material in obj.materials[:] {
 		for &mat in material.strings {
-			mat.start += header.mtl_strings.start
+			mat.start += header.strings.start
 		}
 	}
-	header.mtllist = bobctx_add(&ctx, mtl.materials[:])
 
-	//
-	// Meshes
-	//
-	header.mesh_strings = bobctx_add(&ctx, obj.strings[:])
-
-	// offset the strings so it points to the data in our bob
 	for &mesh in obj.meshes[:] {
-		mesh.material.start += header.mesh_strings.start
-		mesh.name.start += header.mesh_strings.start
+		mesh.material.start += header.strings.start
+		mesh.name.start += header.strings.start
 	}
-	header.meshes = bobctx_add(&ctx, obj.meshes[:])
+
 
 	//
-	// Model data
+	// everything else (plain old data)
 	//
+	header.mtllist = bobctx_add(&ctx, obj.materials[:])
+	header.meshes = bobctx_add(&ctx, obj.meshes[:])
 	header.vertices = bobctx_add(&ctx, obj.vertices[:])
 	header.normals = bobctx_add(&ctx, obj.normals[:])
 	header.texcoords = bobctx_add(&ctx, obj.texcoords[:])
@@ -375,7 +448,7 @@ bobctx_write :: proc(ctx: BobCreateContext, f: ^os.File) -> (err: os.Error) {
 
 
 // Modifies the strings in the mtl and obj, thus we need a pointer to each
-bob_create_file :: proc(obj: ^Obj, mtl: ^Mtl, output_path: string) -> (err: os.Error) {
+bob_create_file :: proc(obj: ^Obj, output_path: string) -> (err: os.Error) {
 	corner, dim := obj_get_bounding_box(obj^)
 
 	header := BobHeader {
@@ -383,7 +456,7 @@ bob_create_file :: proc(obj: ^Obj, mtl: ^Mtl, output_path: string) -> (err: os.E
 		dim    = dim,
 	}
 
-	ctx := bobctx_make(&header, obj, mtl)
+	ctx := bobctx_make(&header, obj)
 
 	ofile := os.create(output_path) or_return
 	defer os.close(ofile)
