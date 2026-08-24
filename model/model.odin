@@ -12,6 +12,7 @@ bob_load_or_create :: proc(bob: ^Bob, bob_path, obj_path: string) -> (result: Re
 	bob_create_file(&temp_obj, bob_path) or_return
 	bob_load(bob, bob_path) or_return
 
+	result = .Ok
 	return
 }
 
