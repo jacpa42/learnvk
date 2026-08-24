@@ -361,7 +361,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 	model_from_vertex :=
 		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
-		linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
+		linalg.matrix4_rotate_f32(engine.model_rotation, engine.camera.up)
 
 	return Uniforms {
 		camera_position = engine.camera.pos,

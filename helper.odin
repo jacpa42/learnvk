@@ -4,7 +4,11 @@ import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:mem"
+import "core:path/filepath"
+import "core:strings"
+import "model"
 import "vendor:glfw"
+import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
 cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer) {
@@ -475,7 +479,7 @@ callback_cursor_move :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 	w, h := glfw.GetFramebufferSize(window)
 	if w <= 0 || h <= 0 do return
 
-	delta := engine.camera.sensitivity * [2]f32{f32(-xpos), f32(ypos)}
+	delta := engine.camera.sensitivity * [2]f32{f32(ypos), f32(xpos)}
 	glfw.SetCursorPos(window, 0, 0)
 
 	engine.camera.yaw -= delta.x
@@ -532,5 +536,156 @@ make_or_clear :: proc(item: ^[dynamic]$T) {
 		item^ = make([dynamic]T)
 	} else {
 		clear(item)
+	}
+}
+
+get_texture_details :: proc(
+	m: Model,
+	mtl: model.Material,
+	material_type: MaterialType,
+) -> (
+	texture_path: cstring,
+	desired_channels: i32,
+	texture_format: vk.Format,
+	ok: bool,
+) {
+	texture_rel_path: string
+
+	switch material_type {
+	case .diffuse:
+		texture_rel_path = model.get_material_string(m, mtl, .map_Kd)
+		desired_channels = 4
+		texture_format = .R8G8B8A8_SRGB
+
+	case .emmisive:
+		texture_rel_path = model.get_material_string(m, mtl, .map_Ke)
+		desired_channels = 4
+		texture_format = .R8G8B8A8_SRGB
+
+	case .normal:
+		texture_rel_path = model.get_material_string(m, mtl, .map_bump)
+		desired_channels = 4
+		texture_format = .R8G8B8A8_SRGB
+
+	case .specular:
+		texture_rel_path = model.get_material_string(m, mtl, .map_Ks)
+		desired_channels = 4
+		texture_format = .R8G8B8A8_SRGB
+	}
+
+
+	if len(texture_rel_path) == 0 {
+		ok = false
+		return
+	}
+
+	//
+	// Resolve the true path
+	//
+	path, alloc_err := filepath.join(
+		[]string{filepath.dir(model.get_mtl_path(m)), texture_rel_path},
+		context.temp_allocator,
+	)
+	assert(alloc_err == nil)
+
+	texture_path = strings.clone_to_cstring(path, context.temp_allocator)
+
+	ok = true
+	return
+}
+
+LoadTaskData :: struct {
+	//
+	// input
+	//
+	input:  struct #all_or_none {
+		texture_cpath:    cstring,
+		desired_channels: i32,
+		format:           vk.Format,
+	},
+
+	//
+	// output
+	//
+	output: struct #all_or_none {
+		width:    i32,
+		height:   i32,
+		channels: i32,
+		data:     []u8,
+		ok:       bool,
+	},
+}
+
+eat_load_task :: proc(t: ^LoadTaskData) {
+	assert(t.input.texture_cpath != nil)
+	assert(t.input.desired_channels != 0)
+	assert(t.input.format != .UNDEFINED)
+
+
+	//
+	// Load pixels into RAM
+	//
+	width, height, channels: i32
+	data := stb_image.load(
+		t.input.texture_cpath,
+		&width,
+		&height,
+		&channels,
+		t.input.desired_channels,
+	)
+
+	if data == nil {
+		t.output.ok = false
+		return
+	}
+
+	data_len := int(width) * int(height) * int(t.input.desired_channels)
+
+	t.output = {
+		width    = width,
+		height   = height,
+		channels = channels,
+		data     = data[:data_len],
+		ok       = true,
+	}
+
+	return
+}
+
+engine_load_material_texture_data :: proc(
+	load_tasks: ^[dynamic]LoadTaskData,
+
+	// input
+	this_model: Model,
+	model_tag: ModelTag,
+	mesh: model.Mesh,
+) {
+	//
+	// Try to find the material type for this mesh
+	//
+
+	material, found := model.find_material_by_mesh(this_model, mesh)
+	if !found {
+		log.warnf(
+			"Failed to find material for \"{}.{}\"",
+			model_tag,
+			model.get_mesh_name(this_model, mesh),
+		)
+		return
+	}
+
+	//
+	// Load all the material textures onto the gpu
+	//
+	for material_type in MaterialType {
+
+		//
+		// Get the details for the texure
+		//
+		task: LoadTaskData
+
+		task.input = {get_texture_details(this_model, material, material_type) or_continue}
+
+		append(load_tasks, task)
 	}
 }

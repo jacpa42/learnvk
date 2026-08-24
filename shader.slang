@@ -1,3 +1,8 @@
+#define ENABLE_DIFFUSE
+// #define ENABLE_EMISSIVE
+// #define ENABLE_NORMAL
+// #define ENABLE_SPECULAR
+
 struct Vertex {
     float3 pos;
     float3 norm;
@@ -55,39 +60,27 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     float2 coords = float2(input.texcoord.x, 1.0 - input.texcoord.y);
     float4 col = float4(1.0);
 
-if (true) {
-    //
-    // Diffuse texture sampling
-    //
+#ifdef ENABLE_DIFFUSE
     col *= tex_diffuse.Sample(coords);
-}
+#endif
 
-if (false) {
-    //
-    // Emissive texture sampling
-    //
+#ifdef ENABLE_EMISSIVE
     float4 emissive = tex_emmisive.Sample(coords);
     col += emissive;
-}
+#endif
 
-if (false) {
-    //
-    // Normal texture sampling
-    //
+#ifdef ENABLE_NORMAL
     float3 normal = tex_normal.Sample(input.texcoord).xyz;
     col.xyz += float3(dot(uniforms.lightdir, normal));
-}
+#else
+    float3 normal = uniforms.lightdir;
+#endif
 
-if (false) {
-    //
-    // Specular texture sampling
-    //
-    float3 normal = tex_normal.Sample(input.texcoord).xyz;
+#ifdef ENABLE_SPECULAR
     float3 reflected = reflect(-uniforms.lightdir, normal);
     float spec = pow(max(dot(reflected, input.view_dir), 0.0), 32.0);
     col.xyz += tex_specular.Sample(input.texcoord).xyz * spec;
-}
-
+#endif
 
     return col;
 }

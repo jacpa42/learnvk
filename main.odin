@@ -294,10 +294,10 @@ engine_init :: proc(engine: ^Engine) {
 	engine.camera = {
 		speed       = 0.01,
 		sensitivity = 0.0005,
-		pitch       = -0.22649306,
-		yaw         = -13.883406,
-		pos         = {-0.05028938, 0.7962618, 2.4146438},
-		up          = {0, 1, 0},
+		pitch       = 0,
+		yaw         = 0,
+		pos         = {0, 0, 0},
+		up          = {0, 0, -1},
 	}
 
 	//
@@ -971,8 +971,12 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 		),
 	}
 
-	pixel := []u8{0xff, 0xff, 0xff, 0xff}
+	pixel := []u8{0x00, 0x00, 0x00, 0x00}
 	engine_upload_image_data(engine, engine.fallback_texture.image, pixel, width = 1, height = 1)
+
+	//
+	// Load all the required textures
+	//
 
 	for model_tag in engine.model_loaded {
 
