@@ -312,7 +312,7 @@ shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulka
 	case .resource:
 		switch shader_param.type.baseShape {
 		case .none:
-			unreachable()
+			assert(false)
 		case .texture2D:
 			return .COMBINED_IMAGE_SAMPLER
 		case .structuredBuffer:
@@ -335,7 +335,7 @@ param_get_vk_format :: proc(
 ) {
 	switch f in field {
 	case SlangStruct:
-		unreachable()
+		assert(false)
 	// TODO
 
 	case SlangScalar:
@@ -389,6 +389,8 @@ param_get_vk_format :: proc(
 	case:
 		fmt.panicf("unknown field type: {}", field)
 	}
+
+	return
 }
 
 param_guess_input_rate :: proc(name: string) -> string {

@@ -52,13 +52,112 @@ find_format :: proc(
 		}
 	}
 
-	unreachable()
+	assert(false)
+	return .UNDEFINED
+}
+
+engine_upload_image_data :: proc(
+	engine: ^Engine,
+	image: vk.Image,
+	data: []u8,
+	#any_int width: u32,
+	#any_int height: u32,
+) {
+	//
+	// Upload first to the staging buffer
+	//
+	assert(len(data) <= STAGING_BUFFER_SIZE)
+	mem.copy_non_overlapping(
+		dst = engine.vk_transfer_buffer_mmap,
+		src = raw_data(data),
+		len = len(data),
+	)
+
+	//
+	// Execute the command buffer operations to create our image gpu side
+	//
+	cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
+	defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
+
+	//
+	// Setup a memory barrier which syncs the image transition and mem copy
+	// of pixel data. the mem copy happens directly after the memory transition.
+	//
+	image_barrier := vk.ImageMemoryBarrier {
+		sType = .IMAGE_MEMORY_BARRIER,
+		srcAccessMask = {},
+		dstAccessMask = {.TRANSFER_WRITE},
+		oldLayout = .UNDEFINED,
+		newLayout = .TRANSFER_DST_OPTIMAL,
+		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		image = image,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+
+	vk.CmdPipelineBarrier(
+		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+		srcStageMask = {.TOP_OF_PIPE},
+		dstStageMask = {.TRANSFER},
+		dependencyFlags = {},
+		memoryBarrierCount = 0,
+		pMemoryBarriers = nil,
+		bufferMemoryBarrierCount = 0,
+		pBufferMemoryBarriers = nil,
+		imageMemoryBarrierCount = 1,
+		pImageMemoryBarriers = &image_barrier,
+	)
+
+	//
+	// Add the copy command
+	//
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		imageExtent = {width, height, 1},
+	}
+
+	vk.CmdCopyBufferToImage(
+		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+		srcBuffer = engine.vk_transfer_buffer,
+		dstImage = image,
+		dstImageLayout = .TRANSFER_DST_OPTIMAL,
+		regionCount = 1,
+		pRegions = &region,
+	)
+
+	//
+	// Transition the image to be optimal for sampling
+	//
+	image_barrier = vk.ImageMemoryBarrier {
+		sType = .IMAGE_MEMORY_BARRIER,
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstAccessMask = {.SHADER_READ},
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		image = image,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+
+	vk.CmdPipelineBarrier(
+		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+		srcStageMask = {.TRANSFER},
+		dstStageMask = {.FRAGMENT_SHADER},
+		dependencyFlags = {},
+		memoryBarrierCount = 0,
+		pMemoryBarriers = nil,
+		bufferMemoryBarrierCount = 0,
+		pBufferMemoryBarriers = nil,
+		imageMemoryBarrierCount = 1,
+		pImageMemoryBarriers = &image_barrier,
+	)
 }
 
 engine_create_image :: proc(
 	engine: ^Engine,
-	properties: ^vk.PhysicalDeviceMemoryProperties,
-	width, height: u32,
+	#any_int width: u32,
+	#any_int height: u32,
 	format: vk.Format,
 	usage: vk.ImageUsageFlags,
 	desired_properties: vk.MemoryPropertyFlags,
@@ -94,7 +193,7 @@ engine_create_image :: proc(
 		sType           = .MEMORY_ALLOCATE_INFO,
 		allocationSize  = requirements.size,
 		memoryTypeIndex = device_get_memory_type_index(
-			properties,
+			&engine.vk_physical_device_memory_properties,
 			requirements,
 			desired_properties,
 		),
@@ -195,7 +294,8 @@ device_get_memory_type_index :: proc(
 		}
 	}
 
-	unreachable()
+	assert(false)
+	return 0
 }
 
 //
@@ -305,27 +405,12 @@ device_meets_requirements :: proc(
 		}
 
 		if !found {
-			log.fatalf("Failed to find device extension \"{}\"", required)
+			log.errorf("Failed to find device extension \"{}\"", required)
 			return false
 		}
 	}
 
 	return true
-}
-
-dump_mem_info :: proc(track: mem.Tracking_Allocator) {
-	if len(track.allocation_map) > 0 {
-		log.errorf("=== %v allocations not freed: ===", len(track.allocation_map))
-		for _, entry in track.allocation_map {
-			log.debugf("%v bytes @ %v", entry.size, entry.location)
-		}
-	}
-	if len(track.bad_free_array) > 0 {
-		log.errorf("=== %v incorrect frees: ===", len(track.bad_free_array))
-		for entry in track.bad_free_array {
-			log.debugf("%p @ %v", entry.memory, entry.location)
-		}
-	}
 }
 
 glfw_error_callback :: proc "c" (error: i32, description: cstring) {
@@ -350,6 +435,9 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
 	case glfw.KEY_Q:
         if activate {
             CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
+            for (CURRENT_MODEL not_in engine.model_loaded) {
+                CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
+            }
         }
 
 	case glfw.KEY_W:
@@ -428,7 +516,7 @@ vulkan_validation_callback :: proc "system" (
 
 		if .ERROR in message_severity {
 			log.errorf(MESSAGE_FORMAT, mt, p_callback_data.pMessage)
-			unreachable()
+			assert(false)
 		}
 
 		log.infof(MESSAGE_FORMAT, mt, p_callback_data.pMessage)

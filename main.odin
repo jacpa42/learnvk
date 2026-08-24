@@ -2,6 +2,7 @@ package learnvk
 
 import "base:runtime"
 import "core:c"
+import "core:debug/trace"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
@@ -14,16 +15,12 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-//
-// /home/jacob/Projects/game_programming/learnvk/model/bob.odin:235:31
-//
-
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
-LOAD_MODELS := bit_set[ModelTag]{.viking_room}
+LOAD_MODELS := bit_set[ModelTag]{.bunny, .dragon, .viking_room, .dark_lord}
 PIPELINE :: Pipeline.shader
 
-Bob :: model.Bob
+Model :: model.Bob
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
 ENABLE_DEPTH_TEST :: true
@@ -59,14 +56,6 @@ BOB_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.bob",
 }
 
-MTL_PATH := [ModelTag]string {
-	.bmw         = "assets/bmw/bmw.mtl",
-	.bunny       = "assets/default.mtl",
-	.dark_lord   = "assets/darklord/darklord.mtl",
-	.dragon      = "assets/default.mtl",
-	.viking_room = "assets/viking_room/viking_room.mtl",
-}
-
 g_logger: runtime.Logger
 
 Image :: struct {
@@ -81,7 +70,7 @@ MaterialType :: enum {
 	specular,
 }
 
-MaterialTextures :: [MaterialType]struct {
+Texture :: struct {
 	image:  vk.Image,
 	view:   vk.ImageView,
 	memory: vk.DeviceMemory,
@@ -101,16 +90,15 @@ ImageViewTag :: enum {
 	depth_buffer,
 }
 
-
-ShaderFlag :: enum u32 {
-	has_diffuse,
-	has_emmisive,
-	has_normal,
-	has_specular,
+UniformFlag :: enum {
+	enable_diffuse,
+	enable_emmisive,
+	enable_normal,
+	enable_specular,
 }
 
 Uniforms :: struct #all_or_none #align (16) {
-	flags:             bit_set[ShaderFlag;u32],
+	camera_position:   [3]f32,
 	lightdir:          [3]f32,
 	screen_from_world: matrix[4, 4]f32,
 	world_from_model:  matrix[4, 4]f32,
@@ -140,7 +128,7 @@ Engine :: struct {
 	stop_rendering:                         bool,
 	framebuffer_resized:                    bool,
 	model_loaded:                           bit_set[ModelTag],
-	models:                                 [ModelTag]Bob,
+	models:                                 [ModelTag]Model,
 
 	//
 	// Vulkan stuff
@@ -209,8 +197,10 @@ Engine :: struct {
 	//
 	// mesh textures
 	//
+	fallback_texture:                       Texture,
+
 	// One for each mesh in each model
-	vk_mesh_images:                         [ModelTag][]MaterialTextures,
+	vk_mesh_images:                         [ModelTag][][MaterialType]Texture,
 	// one allocation for all images
 	vk_image_sampler:                       [MaterialType]vk.Sampler,
 
@@ -253,14 +243,14 @@ main :: proc() {
 		context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
 		defer log.destroy_console_logger(context.logger)
 
-		track: mem.Tracking_Allocator
-		mem.tracking_allocator_init(&track, context.allocator)
-		context.allocator = mem.tracking_allocator(&track)
+		track: trace.Tracking_Allocator
+		trace.tracking_allocator_init(&track, context.allocator)
+		defer trace.tracking_allocator_destroy(&track)
 
-		defer {
-			dump_mem_info(track)
-			mem.tracking_allocator_destroy(&track)
-		}
+		context.allocator = trace.tracking_allocator(&track)
+		defer trace.tracking_allocator_print_results(&track)
+
+		context.assertion_failure_proc = trace.assertion_failure_proc
 	}
 
 	//
@@ -319,12 +309,18 @@ engine_init :: proc(engine: ^Engine) {
 		m := &engine.models[tag]
 
 		when type_of(engine.models[tag]) == model.Bob {
-			res = model.bob_load_or_create(m, BOB_PATH[tag], OBJ_PATH[tag])
+			model_path := BOB_PATH[tag]
+			res = model.bob_load_or_create(m, model_path, OBJ_PATH[tag])
 		} else {
-			res = model.obj_load(m, OBJ_PATH[tag])
+			model_path := OBJ_PATH[tag]
+			res = model.obj_load(m, model_path)
 		}
 
-		if res == .Ok do engine.model_loaded |= {tag}
+		if res == .Ok {
+			engine.model_loaded |= {tag}
+		} else {
+			log.errorf("Failed to load \"{}\": {}", model_path, res)
+		}
 	}
 
 	assert(card(engine.model_loaded) > 0)
@@ -961,10 +957,27 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 }
 
 engine_load_all_textures :: proc(engine: ^Engine) {
+	//
+	// Setup a single pixel fallback buffer
+	//
+	engine.fallback_texture = {
+		engine_create_image(
+			engine = engine,
+			width = 1,
+			height = 1,
+			format = .R8G8B8A8_SNORM,
+			usage = {.SAMPLED, .TRANSFER_DST},
+			desired_properties = {.DEVICE_LOCAL},
+		),
+	}
+
+	pixel := []u8{0xff, 0xff, 0xff, 0xff}
+	engine_upload_image_data(engine, engine.fallback_texture.image, pixel, width = 1, height = 1)
+
 	for model_tag in engine.model_loaded {
 
 		num_meshes := len(model.get_meshes(engine.models[model_tag]))
-		engine.vk_mesh_images[model_tag] = make([]MaterialTextures, num_meshes)
+		engine.vk_mesh_images[model_tag] = make([][MaterialType]Texture, num_meshes)
 
 		for mesh_index in 0 ..< num_meshes {
 			engine_load_material_textures(engine, model_tag, mesh_index)
@@ -973,15 +986,75 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 }
 
 engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh_index: int) {
+
+	get_texture_details :: proc(
+		m: Model,
+		mtl: model.Material,
+		material_type: MaterialType,
+	) -> (
+		texture_path: cstring,
+		desired_channels: i32,
+		texture_format: vk.Format,
+		ok: bool,
+	) {
+		texture_rel_path: string
+
+		switch material_type {
+		case .diffuse:
+			texture_rel_path = model.get_material_string(m, mtl, .map_Kd)
+			desired_channels = 4
+			texture_format = .R8G8B8A8_SRGB
+
+		case .emmisive:
+			texture_rel_path = model.get_material_string(m, mtl, .map_Ke)
+			desired_channels = 4
+			texture_format = .R8G8B8A8_SRGB
+
+		case .normal:
+			texture_rel_path = model.get_material_string(m, mtl, .map_bump)
+			desired_channels = 4
+			texture_format = .R8G8B8A8_SRGB
+
+		case .specular:
+			texture_rel_path = model.get_material_string(m, mtl, .map_Ks)
+			desired_channels = 4
+			texture_format = .R8G8B8A8_SRGB
+		}
+
+
+		if len(texture_rel_path) == 0 {
+			ok = false
+			return
+		}
+
+		//
+		// Resolve the true path
+		//
+		path, alloc_err := filepath.join(
+			[]string{filepath.dir(model.get_mtl_path(m)), texture_rel_path},
+			context.temp_allocator,
+		)
+		assert(alloc_err == nil)
+
+		texture_path = strings.clone_to_cstring(path, context.temp_allocator)
+
+		ok = true
+		return
+	}
+
 	//
 	// Try to find the material type for this mesh
 	//
-	m := engine.models[model_tag]
-	mesh := model.get_meshes(m)[mesh_index]
+	this_model := engine.models[model_tag]
+	mesh := model.get_meshes(this_model)[mesh_index]
 
-	mtl, found := model.find_material_by_mesh(m, mesh)
+	material, found := model.find_material_by_mesh(this_model, mesh)
 	if !found {
-		log.warnf("Failed to find material for \"{}.{}\"", model_tag, model.get_mesh_name(m, mesh))
+		log.warnf(
+			"Failed to find material for \"{}.{}\"",
+			model_tag,
+			model.get_mesh_name(this_model, mesh),
+		)
 		return
 	}
 
@@ -991,171 +1064,51 @@ engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh
 	for material_type in MaterialType {
 
 		//
-		// Get the file path
+		// Get the details for the texure
 		//
-		path: string
-		desired_channels: i32
-		texture_format: vk.Format
-
-		switch material_type {
-		case .diffuse:
-			path = model.get_material_string(m, mtl, .map_Kd)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .emmisive:
-			path = model.get_material_string(m, mtl, .map_Ke)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .normal:
-			path = model.get_material_string(m, mtl, .map_bump)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .specular:
-			path = model.get_material_string(m, mtl, .map_Ks)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-		}
-
-		if len(path) == 0 {
-			log.warnf(
-				"model {} mesh {} has no {} texture map",
-				model_tag,
-				model.get_mesh_name(m, mesh_index),
-				material_type,
-			)
-			continue
-		}
-
-		//
-		// Resolve the path as its relative
-		//
-		err: runtime.Allocator_Error
-		path, err = filepath.join(
-			[]string{filepath.dir(MTL_PATH[model_tag]), path},
-			context.temp_allocator,
-		)
-		assert(err == .None)
-
-		cpath := strings.clone_to_cstring(path, context.temp_allocator)
+		path, desired_channels, texture_format := get_texture_details(
+			this_model,
+			material,
+			material_type,
+		) or_continue
 
 		//
 		// Load pixels into RAM
 		//
-		width, height, num_channels: i32
+		width, height, channels: i32
+		image_data := stb_image.load(path, &width, &height, &channels, desired_channels)
 
-		image_data := stb_image.load(cpath, &width, &height, &num_channels, desired_channels)
 		image_data_len := int(width) * int(height) * int(desired_channels)
 		assert(image_data != nil)
 
-		log.infof("Loaded {} for texture {}.{}", cpath, model_tag, material_type)
-		log.infof("{} || w {} || h {} || c {}", cpath, width, height, desired_channels)
+		log.infof("Loaded {} for texture {}.{}", path, model_tag, material_type)
+		log.infof("{} || w {} || h {} || c {}", path, width, height, desired_channels)
 
 		//
 		// Create the image with its memory
 		//
 		mesh_texture := &engine.vk_mesh_images[model_tag][mesh_index][material_type]
 
-		mesh_texture.image, mesh_texture.view, mesh_texture.memory = engine_create_image(
-			engine = engine,
-			properties = &engine.vk_physical_device_memory_properties,
-			width = u32(width),
-			height = u32(height),
-			format = texture_format,
-			usage = {.SAMPLED, .TRANSFER_DST},
-			desired_properties = {.DEVICE_LOCAL},
-		)
-
-		//
-		// Upload first to the staging buffer
-		//
-		assert(image_data_len <= STAGING_BUFFER_SIZE)
-		mem.copy_non_overlapping(
-			dst = engine.vk_transfer_buffer_mmap,
-			src = image_data,
-			len = image_data_len,
-		)
-
-		//
-		// Execute the command buffer operations to create our image gpu side
-		//
-		cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
-		defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
-
-		//
-		// Setup a memory barrier which syncs the image transition and mem copy
-		// of pixel data. the mem copy happens directly after the memory transition.
-		//
-		image_barrier := vk.ImageMemoryBarrier {
-			sType = .IMAGE_MEMORY_BARRIER,
-			srcAccessMask = {},
-			dstAccessMask = {.TRANSFER_WRITE},
-			oldLayout = .UNDEFINED,
-			newLayout = .TRANSFER_DST_OPTIMAL,
-			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			image = mesh_texture.image,
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		mesh_texture^ = {
+			engine_create_image(
+				engine = engine,
+				width = width,
+				height = height,
+				format = texture_format,
+				usage = {.SAMPLED, .TRANSFER_DST},
+				desired_properties = {.DEVICE_LOCAL},
+			),
 		}
 
-		vk.CmdPipelineBarrier(
-			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-			srcStageMask = {.TOP_OF_PIPE},
-			dstStageMask = {.TRANSFER},
-			dependencyFlags = {},
-			memoryBarrierCount = 0,
-			pMemoryBarriers = nil,
-			bufferMemoryBarrierCount = 0,
-			pBufferMemoryBarriers = nil,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers = &image_barrier,
-		)
-
 		//
-		// Add the copy command
+		// Upload the data to the image
 		//
-		region := vk.BufferImageCopy {
-			imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
-			imageExtent = {u32(width), u32(height), 1},
-		}
-
-		vk.CmdCopyBufferToImage(
-			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-			srcBuffer = engine.vk_transfer_buffer,
-			dstImage = mesh_texture.image,
-			dstImageLayout = .TRANSFER_DST_OPTIMAL,
-			regionCount = 1,
-			pRegions = &region,
-		)
-
-		//
-		// Transition the image to be optimal for sampling
-		//
-		image_barrier = vk.ImageMemoryBarrier {
-			sType = .IMAGE_MEMORY_BARRIER,
-			srcAccessMask = {.TRANSFER_WRITE},
-			dstAccessMask = {.SHADER_READ},
-			oldLayout = .TRANSFER_DST_OPTIMAL,
-			newLayout = .SHADER_READ_ONLY_OPTIMAL,
-			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			image = mesh_texture.image,
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-		}
-
-		vk.CmdPipelineBarrier(
-			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-			srcStageMask = {.TRANSFER},
-			dstStageMask = {.FRAGMENT_SHADER},
-			dependencyFlags = {},
-			memoryBarrierCount = 0,
-			pMemoryBarriers = nil,
-			bufferMemoryBarrierCount = 0,
-			pBufferMemoryBarriers = nil,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers = &image_barrier,
+		engine_upload_image_data(
+			engine,
+			mesh_texture.image,
+			image_data[:image_data_len],
+			width = width,
+			height = height,
 		)
 	}
 }
@@ -1229,7 +1182,6 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	//
 
 	for model_tag in engine.model_loaded {
-
 		num_meshes := len(model.get_meshes(engine.models[model_tag]))
 		engine.vk_descriptor_sets[model_tag] = make([]vk.DescriptorSet, num_meshes)
 
@@ -1274,51 +1226,6 @@ engine_configure_descriptor_set :: proc(
 ) {
 	#assert(PIPELINE == .shader)
 	for binding, binding_tag in SHADER_PIPELINE_SET_LAYOUTS {
-		buffer_info: vk.DescriptorBufferInfo
-		image_info: vk.DescriptorImageInfo
-
-
-		//
-		// Define which buffer to bind to this descriptor set
-		//
-
-		switch binding_tag {
-
-		case .uniforms:
-			// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
-			buffer_info = vk.DescriptorBufferInfo {
-				buffer = engine.vk_uniform_buffers[0],
-				range  = vk.DeviceSize(vk.WHOLE_SIZE),
-			}
-
-		case .tex_diffuse:
-			image_info = vk.DescriptorImageInfo {
-				sampler     = engine.vk_image_sampler[.diffuse],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.diffuse].view,
-				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-			}
-
-		// case .tex_emmisive:
-		// 	image_info = vk.DescriptorImageInfo {
-		// 		sampler     = engine.vk_image_sampler[.emmisive],
-		// 		imageView   = engine.vk_mesh_images[model_tag][mesh_index][.emmisive].view,
-		// 		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-		// 	}
-		//
-		// case .tex_normal:
-		// 	image_info = vk.DescriptorImageInfo {
-		// 		sampler     = engine.vk_image_sampler[.normal],
-		// 		imageView   = engine.vk_mesh_images[model_tag][mesh_index][.normal].view,
-		// 		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-		// 	}
-		//
-		// case .tex_specular:
-		// 	image_info = vk.DescriptorImageInfo {
-		// 		sampler     = engine.vk_image_sampler[.specular],
-		// 		imageView   = engine.vk_mesh_images[model_tag][mesh_index][.specular].view,
-		// 		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-		// 	}
-		}
 
 		write_ds := vk.WriteDescriptorSet {
 			sType            = .WRITE_DESCRIPTOR_SET,
@@ -1331,15 +1238,94 @@ engine_configure_descriptor_set :: proc(
 			pImageInfo       = nil,
 			pTexelBufferView = nil,
 		}
+		buffer_info: vk.DescriptorBufferInfo
+		image_info: vk.DescriptorImageInfo
 
-		if (buffer_info.buffer != 0 && buffer_info.range != 0) {
+		//
+		// Define which buffer to bind to this descriptor set
+		//
+
+
+		switch binding_tag {
+
+		case .uniforms:
+			// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
+			buffer_info = vk.DescriptorBufferInfo {
+				buffer = engine.vk_uniform_buffers[0],
+				range  = vk.DeviceSize(vk.WHOLE_SIZE),
+			}
+
 			write_ds.pBufferInfo = &buffer_info
-		} else if (image_info.sampler != 0 && image_info.imageView != 0) {
+
+		case .tex_diffuse:
+			image_info = vk.DescriptorImageInfo {
+				sampler     = engine.vk_image_sampler[.diffuse],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.diffuse].view,
+				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+			}
+
+			//
+			// If the image view is nil, then this thing probably doesn't have a
+			// diffuse texture, in which case we use the fallback texture
+			//
+			if image_info.imageView == 0 {
+				image_info.imageView = engine.fallback_texture.view
+			}
+
 			write_ds.pImageInfo = &image_info
-		} else {
-			// nothing was bound here?
-			unreachable()
+
+		case .tex_emmisive:
+			image_info = vk.DescriptorImageInfo {
+				sampler     = engine.vk_image_sampler[.emmisive],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.emmisive].view,
+				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+			}
+
+			//
+			// If the image view is nil, then this thing probably doesn't have a
+			// diffuse texture, in which case we use the fallback texture
+			//
+			if image_info.imageView == 0 {
+				image_info.imageView = engine.fallback_texture.view
+			}
+
+			write_ds.pImageInfo = &image_info
+
+		case .tex_normal:
+			image_info = vk.DescriptorImageInfo {
+				sampler     = engine.vk_image_sampler[.normal],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.normal].view,
+				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+			}
+
+			//
+			// If the image view is nil, then this thing probably doesn't have a
+			// diffuse texture, in which case we use the fallback texture
+			//
+			if image_info.imageView == 0 {
+				image_info.imageView = engine.fallback_texture.view
+			}
+
+			write_ds.pImageInfo = &image_info
+
+		case .tex_specular:
+			image_info = vk.DescriptorImageInfo {
+				sampler     = engine.vk_image_sampler[.specular],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.specular].view,
+				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+			}
+
+			//
+			// If the image view is nil, then this thing probably doesn't have a
+			// diffuse texture, in which case we use the fallback texture
+			//
+			if image_info.imageView == 0 {
+				image_info.imageView = engine.fallback_texture.view
+			}
+
+			write_ds.pImageInfo = &image_info
 		}
+
 
 		vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
 	}
@@ -1978,6 +1964,10 @@ engine_destroy :: proc(engine: ^Engine) {
 	for sampler in engine.vk_image_sampler {
 		vk.DestroySampler(engine.vk_device, sampler, &engine.vk_alloc)
 	}
+
+	vk.FreeMemory(engine.vk_device, engine.fallback_texture.memory, &engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, &engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, &engine.vk_alloc)
 
 	for image_list in engine.vk_mesh_images {
 		defer delete(image_list)

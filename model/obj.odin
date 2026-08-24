@@ -10,8 +10,6 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 
-starts_with := strings.starts_with
-
 // odinfmt: disable
 obj_dump_info :: proc(obj: ^Obj) {
 	info :: fmt.eprintf
@@ -24,7 +22,7 @@ obj_dump_info :: proc(obj: ^Obj) {
 		name := get_slice_string(mesh.name, obj.strings[:])
 		material := get_slice_string(mesh.material, obj.strings[:])
 		info(
-			"{} mesh {} : name={} material={} num_faces={}\n",
+			"{} mesh {} : name={} material={} num_indicies={}\n",
 			rawptr(obj),
 			i,
 			name,
@@ -75,7 +73,7 @@ obj_load :: proc(obj: ^Obj, path: string) -> (result: Result) {
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
 	if oserr != nil {
-		log.fatalf("Failed to load obj file \"{}\": {}", path, oserr)
+		log.errorf("Failed to load obj file \"{}\": {}", path, oserr)
 		return .Obj_Load_Error
 	}
 
@@ -92,8 +90,7 @@ obj_load :: proc(obj: ^Obj, path: string) -> (result: Result) {
 		)
 	}
 
-
-	when ODIN_DEBUG do obj_dump_info(obj)
+	when ENABLE_DEBUG_PRINTING do obj_dump_info(obj)
 
 	result = .Ok
 	return
@@ -107,7 +104,6 @@ obj_make_vertices :: proc(
 	indices: ^[dynamic]u32,
 	faces: []Face,
 	positions, normals, texcoords: []f32,
-	deduplicate_vertex_data := false,
 ) {
 	point_compare :: proc "contextless" (v0, v1: Vertex, eps: f32 = 1e-1) -> bool {
 		diff := simd.abs(simd.sub(simd.from_array(v0), simd.from_array(v1)))
@@ -150,7 +146,7 @@ obj_make_vertices :: proc(
 
 		new_point_index: int
 
-		if deduplicate_vertex_data {
+		when DEDUPLICATE_VERTEX_DATA {
 			new_point_index = find_vertex(new_point, vertices[:])
 			if new_point_index == -1 {
 				new_point_index = len(vertices)
@@ -210,13 +206,22 @@ obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (result: Res
 
 	line_iter := string(data)
 	for line in strings.split_lines_iterator(&line_iter) {
-		if len(line) < 2 { continue }
+		if len(line) < 2 || line[0] == '#' {
+            continue
+        }
 
         prefix := (u16(line[0])<<8) | u16(line[1])
 
         noprefix := line[strings.index_byte(line, ' ') + 1:]
+        noprefix = strings.trim(noprefix, " ")
 
-        POSITION   :: ('v' << 8) | ' '
+        when ENABLE_DEBUG_PRINTING {
+            fmt.eprintfln("with pref :: \"{}\"", line)
+            fmt.eprintfln("no prefix :: \"{}\"", noprefix)
+        }
+
+
+        POSITION :: ('v' << 8) | ' '
         NORMAL   :: ('v' << 8) | 'n'
         TEXCOORD :: ('v' << 8) | 't'
         FACE     :: ('f' << 8) | ' '
@@ -235,7 +240,7 @@ obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (result: Res
 		case OBJECT:   obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
 		case GROUP:    obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
 
-		case MTLLIB:   obj_load_mtl(string_data, materials, obj_path, noprefix) or_return
+		case MTLLIB:   obj_load_mtl(string_data, materials, &m.mtl_path, obj_path, noprefix) or_return
 		case NEW_MAT:  current_material = noprefix
 
 		case:          continue
@@ -254,7 +259,7 @@ obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (result: Res
         texcoords = temp_texcoords[:],
     )
 
-    result=.Ok
+    result = .Ok
 	return
 }
 // odinfmt: enable
@@ -262,6 +267,7 @@ obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (result: Res
 obj_load_mtl :: proc(
 	strings: ^[dynamic]byte,
 	materials: ^[dynamic]Material,
+	mtl_path_slice: ^Slice(byte),
 	obj_path, mtl_rel_path: string,
 ) -> (
 	result: Result,
@@ -271,7 +277,11 @@ obj_load_mtl :: proc(
 		context.temp_allocator,
 	)
 	assert(err == nil)
+	assert(mtl_path_slice^ == {}) // must be first time we are calling this function
 
+	mtl_path_slice.start = u32(len(strings))
+	mtl_path_slice.size = u32(len(mtl_path))
+	append(strings, mtl_path)
 
 	result = mtl_load({strings, materials}, mtl_path)
 	return
@@ -337,16 +347,16 @@ parse_v3 :: proc(noprefix: string) -> (x, y, z: f32, result: Result) {
 	ok: bool
 
 	x, ok = strconv.parse_f32(noprefix[:space0])
-	if !ok {result = .Invalid_Char; return}
+	if !ok {result = .Float3_Invalid_Char; return}
 
 	y, ok = strconv.parse_f32(noprefix[space0 + 1:space1])
-	if !ok {result = .Invalid_Char; return}
+	if !ok {result = .Float3_Invalid_Char; return}
 
 	z, ok = strconv.parse_f32(noprefix[space1 + 1:])
-	if !ok {result = .Invalid_Char; return}
+	if !ok {result = .Float3_Invalid_Char; return}
 
 	when ENABLE_DEBUG_PRINTING {
-		fmt.eprintfln("\"{}\" -> {}", noprefix, vertex)
+		fmt.eprintfln("\"{}\" -> {}", noprefix, [3]f32{x, y, z})
 	}
 
 	ok = true
@@ -368,13 +378,13 @@ parse_v2 :: proc(noprefix: string) -> (x, y: f32, result: Result) {
 	ok: bool
 
 	x, ok = strconv.parse_f32(noprefix[:space0])
-	if !ok {result = .Invalid_Char; return}
+	if !ok {result = .Float2_Invalid_Char; return}
 
 	y, ok = strconv.parse_f32(noprefix[space0 + 1:])
-	if !ok {result = .Invalid_Char; return}
+	if !ok {result = .Float2_Invalid_Char; return}
 
 	when ENABLE_DEBUG_PRINTING {
-		fmt.eprintfln("\"{}\" -> {}", noprefix, vertex)
+		fmt.eprintfln("\"{}\" -> {}", noprefix, [2]f32{x, y})
 	}
 
 	ok = true
@@ -411,7 +421,7 @@ parse_face :: proc(line: string) -> (face: ParsedFace, result: Result) {
 	face.points_len += 1
 
 	when ENABLE_DEBUG_PRINTING {
-		indices := (([^]i32)(&face.vertices.signed[0]))[:face.points_len * 3]
+		indices := (([^]i32)(&face.points.signed[0]))[:face.points_len * VERTICES_PER_FACE]
 		fmt.eprintfln("\"{}\"->{}", line, indices)
 	}
 

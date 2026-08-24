@@ -1,10 +1,3 @@
-enum Flag : uint {
-    has_diffuse  = 1,
-    has_emmisive = 2,
-    has_normal   = 4,
-    has_specular = 8,
-}
-
 struct Vertex {
     float3 pos;
     float3 norm;
@@ -13,12 +6,13 @@ struct Vertex {
 
 struct VertexOutput {
     float4 pos : SV_Position;
+    float3 view_dir;
     float3 color;
     float2 texcoord;
 };
 
 struct UniformBuffer {
-    Flag     flags; // Bit set of Flag
+    float3   camera_position;
     float3   lightdir;
     float4x4 screen_from_world;
     float4x4 world_from_model;
@@ -30,39 +24,70 @@ ConstantBuffer<UniformBuffer> uniforms;
 
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;
-// Sampler2D tex_emmisive;
-// Sampler2D tex_normal;
-// Sampler2D tex_specular;
+Sampler2D tex_emmisive;
+Sampler2D tex_normal;
+Sampler2D tex_specular;
 
 [shader("vertex")]
 VertexOutput vertex(
-    Vertex vertex,
+    Vertex input,
     uint instanceID : SV_InstanceID
 ) {
     VertexOutput output;
 
-    output.pos = float4(vertex.pos, 1.0);
-    output.pos = mul(uniforms.model_from_vertex, output.pos);
-    output.pos = mul(uniforms.world_from_model,  output.pos);
-    output.pos = mul(uniforms.screen_from_world, output.pos);
+    float4 vertex        = float4(input.pos, 1.0);
+    float4 vertex_model  = mul(uniforms.model_from_vertex, vertex); // model space
+    float4 vertex_world  = mul(uniforms.world_from_model,  vertex_model); // world space
+    float4 vertex_screen = mul(uniforms.screen_from_world, vertex_world); // screen space
+    output.pos = vertex_screen;
 
-    output.color = float3(max(dot(uniforms.lightdir, vertex.norm), 0.05));
-    output.texcoord = vertex.texcoord;
+    output.view_dir = uniforms.camera_position - vertex_world.xyz;
+
+    output.color = float3(max(dot(uniforms.lightdir, input.norm), 0.01));
+
+    output.texcoord = input.texcoord;
 
     return output;
 }
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    float4 col = float4(input.color, 1.0);
+    float2 coords = float2(input.texcoord.x, 1.0 - input.texcoord.y);
+    float4 col = float4(1.0);
 
+if (true) {
     //
     // Diffuse texture sampling
     //
-    if ((uniforms.flags & Flag.has_diffuse) > 0) {
-        float2 coords = float2(input.texcoord.x, 1.0 - input.texcoord.y);
-        col.xyz *= tex_diffuse.Sample(coords).xyz;
-    }
+    col *= tex_diffuse.Sample(coords);
+}
+
+if (false) {
+    //
+    // Emissive texture sampling
+    //
+    float4 emissive = tex_emmisive.Sample(coords);
+    col += emissive;
+}
+
+if (false) {
+    //
+    // Normal texture sampling
+    //
+    float3 normal = tex_normal.Sample(input.texcoord).xyz;
+    col.xyz += float3(dot(uniforms.lightdir, normal));
+}
+
+if (false) {
+    //
+    // Specular texture sampling
+    //
+    float3 normal = tex_normal.Sample(input.texcoord).xyz;
+    float3 reflected = reflect(-uniforms.lightdir, normal);
+    float spec = pow(max(dot(reflected, input.view_dir), 0.0), 32.0);
+    col.xyz += tex_specular.Sample(input.texcoord).xyz * spec;
+}
+
 
     return col;
 }

@@ -25,7 +25,6 @@ model:
 	odin check model -no-entry-point $(DEBUG_FLAGS)
 
 r: debug
-	fd -ebob -xrm
 	./$(MAIN_EXE_PATH)
 
 rr: release

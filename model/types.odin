@@ -1,8 +1,8 @@
 package model
 
-import "base:runtime"
-import "core:os"
 import "core:strings"
+
+DEDUPLICATE_VERTEX_DATA :: false
 
 MAX_POINTS_PER_FACE :: 8
 
@@ -32,6 +32,7 @@ BobHeader :: struct #align (BOB_ALIGN) {
 
 	// Slices of the data chunk. Offsets are from the start of the file
 	strings:  Slice(byte),
+	mtl_path: Slice(byte),
 	meshes:   Slice(Mesh),
 	mtllist:  Slice(Material),
 	vertices: Slice(Vertex),
@@ -58,10 +59,12 @@ Obj :: struct {
 	header:    struct {
 		corner, dim: [3]f32,
 	},
+
 	// essentially an arena for our string data
 	strings:   [dynamic]byte,
 
 	// Meshes and materials
+	mtl_path:  Slice(byte),
 	meshes:    [dynamic]Mesh,
 	materials: [dynamic]Material,
 
@@ -74,7 +77,12 @@ Obj :: struct {
 Result :: enum u32 {
 	Ok = 0,
 	Missing_Separator,
-	Invalid_Char,
+	Float_Invalid_Char,
+	Float_Face_Invalid_Char,
+	Float2_Invalid_Char,
+	Float2_Face_Invalid_Char,
+	Float3_Invalid_Char,
+	Float3_Face_Invalid_Char,
 	Face_Invalid_Char,
 	Mtl_Path_Empty,
 	Mtl_Line_Missing_Separator,

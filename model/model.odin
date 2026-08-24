@@ -1,5 +1,18 @@
 package model
 
+get_mtl_path :: proc {
+	bob_get_mtl_path,
+	obj_get_mtl_path,
+}
+bob_get_mtl_path :: proc(bob: Bob) -> string {
+	// TODO
+	return get_slice_string(bob.header.mtl_path, bob.data)
+}
+obj_get_mtl_path :: proc(obj: Obj) -> string {
+	// TODO
+	return get_slice_string(obj.mtl_path, obj.strings[:])
+}
+
 bob_load_or_create :: proc(bob: ^Bob, bob_path, obj_path: string) -> (result: Result) {
 	result = bob_load(bob, bob_path)
 	if result == .Ok do return

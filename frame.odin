@@ -142,7 +142,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
-		clearValue = vk.ClearValue{color = {float32 = {0.455, 0.086, 0.094, 1.0}}},
+		clearValue = vk.ClearValue{color = {float32 = [4]f32{0x02, 0x02, 0x02, 0xff} / 255}},
 	}
 
 	depth_attachment_info := vk.RenderingAttachmentInfo {
@@ -153,7 +153,6 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		storeOp = .STORE,
 		clearValue = vk.ClearValue{depthStencil = {depth = 1, stencil = 0}},
 	}
-
 
 	render_info := vk.RenderingInfo {
 		sType                = .RENDERING_INFO,
@@ -220,13 +219,13 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	// Draw all our meshes
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
-		// fmt.eprintfln(
-		// 	"drawing faces {} [{}..{}] with material {}",
-		// 	model.get_mesh_name(current_model, mesh),
-		// 	mesh.faces_start,
-		// 	mesh.faces_start + mesh.faces_count,
-		// 	model.get_mesh_material_name(current_model, mesh),
-		// )
+		fmt.eprintfln(
+			"drawing faces {} [{}..{}] with material {}",
+			model.get_mesh_name(current_model, mesh),
+			mesh.index_start,
+			mesh.index_start + mesh.index_count,
+			model.get_mesh_material_name(current_model, mesh),
+		)
 
 		vk.CmdBindDescriptorSets(
 			commandBuffer = commandBuffer,
@@ -342,7 +341,7 @@ engine_handle_input :: proc(engine: ^Engine) {
 }
 // odinfmt: enable
 
-engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
+engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 	//
 	// Engine setup uniforms
 	//
@@ -364,23 +363,21 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
 		linalg.matrix4_rotate_f32(engine.model_rotation, {0, 0, 1})
 
-	u = Uniforms {
-		flags             = {.has_diffuse},
-		lightdir          = linalg.normalize([3]f32{1, 1, 1}),
+	return Uniforms {
+		camera_position = engine.camera.pos,
+		lightdir = linalg.normalize([3]f32{1, 1, 1}),
 		screen_from_world = linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
 			far = 10,
 			near = 0.1,
 		),
-		world_from_model  = linalg.matrix4_look_at_f32(
+		world_from_model = linalg.matrix4_look_at_f32(
 			eye = engine.camera.pos,
 			centre = engine.camera.pos + view_direction,
 			up = engine.camera.up,
 		),
 		model_from_vertex = model_from_vertex,
 	}
-
-	return
 }
 

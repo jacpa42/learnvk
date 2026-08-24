@@ -243,7 +243,7 @@ slang_reflect_unmarshal :: proc(path: string) -> (arena: mem.Arena, r: SlangRefl
 
 	if jerr != nil {
 		fmt.eprintfln("Eish json decode failed: {}", jerr)
-		unreachable()
+		assert(false)
 	}
 
 	return

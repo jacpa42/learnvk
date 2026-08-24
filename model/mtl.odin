@@ -15,7 +15,7 @@ mtl_load :: proc(mtl: Mtl, path: string) -> (result: Result) {
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
 	if oserr != nil {
-		log.fatalf("Failed to load mtl file \"{}\": {}", path, oserr)
+		log.errorf("Failed to load mtl file \"{}\": {}", path, oserr)
 		return .Mtl_Load_Error
 	}
 
@@ -28,6 +28,8 @@ mtl_load :: proc(mtl: Mtl, path: string) -> (result: Result) {
 }
 
 mtl_load_memory :: proc(m: Mtl, data: []byte) -> (result: Result) {
+
+	starts_with := strings.starts_with
 
 	mat: ^Material
 
@@ -139,7 +141,7 @@ parse_v1 :: proc(noprefix: string) -> (v: f32, result: Result) {
 	ok: bool
 
 	v, ok = strconv.parse_f32(noprefix)
-	if !ok do result = .Invalid_Char
+	if !ok do result = .Float_Invalid_Char
 
 	return
 }

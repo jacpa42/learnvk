@@ -70,7 +70,7 @@ bob_destroy :: proc(bob: ^Bob) {
 bob_load :: proc(bob: ^Bob, path: string) -> (result: Result) {
 	sw: time.Stopwatch
 	time.stopwatch_start(&sw)
-	defer {
+	defer if result == .Ok {
 		time.stopwatch_stop(&sw)
 		log.infof("Loaded \"{}\" in {}", path, time.stopwatch_duration(sw))
 	}
@@ -107,13 +107,13 @@ bob_load :: proc(bob: ^Bob, path: string) -> (result: Result) {
 	oserr: os.Error
 	bob.data, oserr = os.read_entire_file(path, {bob_alloc, &bob_alloc_data})
 	if oserr != nil {
-		log.fatalf("Failed to load bob file \"{}\": {}", path, oserr)
+		log.errorf("Failed to load bob file \"{}\": {}", path, oserr)
 		return .Bob_Load_Error
 	}
 
 	bob.header = (^BobHeader)(raw_data(bob.data))^
 
-	when ODIN_DEBUG do bob_dump_info(bob)
+	when ENABLE_DEBUG_PRINTING do bob_dump_info(bob)
 
 	result = .Ok
 	return
@@ -175,6 +175,9 @@ bobctx_make :: proc(header: ^BobHeader, obj: ^Obj) -> (ctx: BobCreateContext) {
 	//
 	header.strings = bobctx_add(&ctx, obj.strings[:])
 
+	header.mtl_path = obj.mtl_path
+	header.mtl_path.start += header.strings.start
+
 	for &material in obj.materials[:] {
 		for &mat in material.strings {
 			mat.start += header.strings.start
@@ -225,7 +228,7 @@ bob_create_file :: proc(obj: ^Obj, output_path: string) -> (result: Result) {
 
 	ofile, err := os.create(output_path)
 	if err != nil {
-		log.fatalf("Failed to create bob file \"{}\": {}", output_path, err)
+		log.errorf("Failed to create bob file \"{}\": {}", output_path, err)
 		result = .Bob_File_Create_Error
 		return
 	}
