@@ -13,23 +13,21 @@ import "core:time"
 bob_dump_info :: proc(bob: ^Bob) {
 	info :: fmt.eprintf
 
-	info("{} faces     : len={} size={}\n", rawptr(bob), slice_len(bob.header.faces), bob.header.faces.size)
-	info("{} vertices  : len={} size={}\n", rawptr(bob), slice_len(bob.header.vertices), bob.header.vertices.size)
-	info("{} normals   : len={} size={}\n", rawptr(bob), slice_len(bob.header.normals), bob.header.normals.size)
-	info("{} texcoords : len={} size={}\n", rawptr(bob), slice_len(bob.header.texcoords), bob.header.texcoords.size)
-	info("{} strings   : {}\n", rawptr(bob), get_slice_string(bob.header.strings, bob.data))
+	info("{} strings  : len={} size={}\n", rawptr(bob), slice_len(bob.header.strings),  bob.header.strings.size)
+	info("{} mtllist  : len={} size={}\n", rawptr(bob), slice_len(bob.header.mtllist),  bob.header.mtllist.size)
+	info("{} vertices : len={} size={}\n", rawptr(bob), slice_len(bob.header.vertices), bob.header.vertices.size)
+	info("{} indices : len={} size={}\n", rawptr(bob), slice_len(bob.header.indices), bob.header.indices.size)
 
 	for mesh, i in get_meshes(bob^) {
 		name := get_slice_string(mesh.name, bob.data)
 		material := get_slice_string(mesh.material, bob.data)
-		num_faces := mesh.faces_count
 		info(
-			"{} mesh {} : name={} material={} num_faces={}\n",
+			"{} mesh {} : name={} material={} num_indices={}\n",
 			rawptr(bob),
 			i,
 			name,
 			material,
-			num_faces,
+			mesh.index_count,
 		)
 	}
 
@@ -61,18 +59,6 @@ bob_dump_info :: proc(bob: ^Bob) {
     ptr = raw_data(get_slice_data(bob.header.vertices, bob.data))
     fmt.eprintln("vertices :", ptr)
 	assert(mem.is_aligned(ptr, BOB_ALIGN))
-
-    ptr = raw_data(get_slice_data(bob.header.normals, bob.data))
-    fmt.eprintln("normals :", ptr)
-	assert(mem.is_aligned(ptr, BOB_ALIGN))
-
-    ptr = raw_data(get_slice_data(bob.header.texcoords, bob.data))
-    fmt.eprintln("texcoords :", ptr)
-	assert(mem.is_aligned(ptr, BOB_ALIGN))
-
-    ptr = raw_data(get_slice_data(bob.header.faces, bob.data))
-    fmt.eprintln("faces :", ptr)
-	assert(mem.is_aligned(ptr, BOB_ALIGN))
 }
 // odinfmt: enable
 
@@ -81,7 +67,7 @@ bob_destroy :: proc(bob: ^Bob) {
 	bob.data = nil
 }
 
-bob_load :: proc(bob: ^Bob, path: string, ok: ^bool = nil) {
+bob_load :: proc(bob: ^Bob, path: string) -> (result: Result) {
 	sw: time.Stopwatch
 	time.stopwatch_start(&sw)
 	defer {
@@ -120,18 +106,16 @@ bob_load :: proc(bob: ^Bob, path: string, ok: ^bool = nil) {
 
 	oserr: os.Error
 	bob.data, oserr = os.read_entire_file(path, {bob_alloc, &bob_alloc_data})
-
 	if oserr != nil {
-		if ok != nil do ok^ = false
-		return
+		log.fatalf("Failed to load bob file \"{}\": {}", path, oserr)
+		return .Bob_Load_Error
 	}
 
 	bob.header = (^BobHeader)(raw_data(bob.data))^
 
-	if ok != nil do ok^ = true
-
 	when ODIN_DEBUG do bob_dump_info(bob)
 
+	result = .Ok
 	return
 }
 
@@ -208,45 +192,49 @@ bobctx_make :: proc(header: ^BobHeader, obj: ^Obj) -> (ctx: BobCreateContext) {
 	header.mtllist = bobctx_add(&ctx, obj.materials[:])
 	header.meshes = bobctx_add(&ctx, obj.meshes[:])
 	header.vertices = bobctx_add(&ctx, obj.vertices[:])
-	header.normals = bobctx_add(&ctx, obj.normals[:])
-	header.texcoords = bobctx_add(&ctx, obj.texcoords[:])
-	header.faces = bobctx_add(&ctx, obj.faces[:])
+	header.indices = bobctx_add(&ctx, obj.indices[:])
 
 	return
 }
 
-bobctx_write :: proc(ctx: BobCreateContext, f: ^os.File) -> (err: os.Error) {
+bobctx_write :: proc(ctx: BobCreateContext, f: ^os.File) -> (result: Result) {
 	written_size: int
 	for data in ctx.data {
-		written_size += os.write(f, data) or_return
+		n, err := os.write(f, data)
+		if err != nil do return .Bob_File_Write_Error
+		written_size += n
 	}
 
 	assert(written_size == ctx.size)
 
-	err = nil
+	result = .Ok
 	return
 }
 
 
 // Modifies the strings in the mtl and obj, thus we need a pointer to each
-bob_create_file :: proc(obj: ^Obj, output_path: string) -> (err: os.Error) {
-	corner, dim := obj_get_bounding_box(obj^)
-
+bob_create_file :: proc(obj: ^Obj, output_path: string) -> (result: Result) {
 	// TODO: rewrite to new format
 
 	header := BobHeader {
-		corner = corner,
-		dim    = dim,
+		corner = obj.header.corner,
+		dim    = obj.header.dim,
 	}
 
 	ctx := bobctx_make(&header, obj)
 
-	ofile := os.create(output_path) or_return
+	ofile, err := os.create(output_path)
+	if err != nil {
+		log.fatalf("Failed to create bob file \"{}\": {}", output_path, err)
+		result = .Bob_File_Create_Error
+		return
+	}
+
 	defer os.close(ofile)
 
 	bobctx_write(ctx, ofile) or_return
 
-	err = nil
+	result = .Ok
 	return
 }
 

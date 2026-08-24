@@ -1,13 +1,23 @@
 package model
 
+bob_load_or_create :: proc(bob: ^Bob, bob_path, obj_path: string) -> (result: Result) {
+	result = bob_load(bob, bob_path)
+	if result == .Ok do return
+
+	temp_obj: Obj
+	obj_init_or_clear(&temp_obj)
+	defer destroy(&temp_obj)
+
+	obj_load(&temp_obj, obj_path) or_return
+	bob_create_file(&temp_obj, bob_path) or_return
+	bob_load(bob, bob_path) or_return
+
+	return
+}
+
 destroy :: proc {
 	obj_destroy,
 	bob_destroy,
-}
-
-load :: proc {
-	bob_load,
-	obj_load,
 }
 
 get_material_string :: proc {
@@ -70,15 +80,26 @@ obj_get_mesh_material_name_index :: proc(obj: Obj, mesh_index: int) -> string {
 	return get_slice_string(get_meshes(obj)[mesh_index].material, obj.strings[:])
 }
 
-get_faces :: proc {
-	get_faces_obj,
-	get_faces_bob,
+get_all_indices :: proc {
+	get_all_indices_obj,
+	get_all_indices_bob,
 }
-get_faces_obj :: proc(obj: Obj) -> []Face {
-	return obj.faces[:]
+get_all_indices_obj :: proc(obj: Obj) -> []u32 {
+	return obj.indices[:]
 }
-get_faces_bob :: proc(bob: Bob) -> []Face {
-	return get_slice_data(bob.header.faces, bob.data)
+get_all_indices_bob :: proc(bob: Bob) -> []u32 {
+	return get_slice_data(bob.header.indices, bob.data)
+}
+
+get_mesh_indices :: proc {
+	get_mesh_indices_obj,
+	get_mesh_indices_bob,
+}
+get_mesh_indices_obj :: proc(obj: Obj, mesh: Mesh) -> []u32 {
+	return obj.indices[:]
+}
+get_mesh_indices_bob :: proc(bob: Bob, mesh: Mesh) -> []u32 {
+	return get_slice_data(bob.header.indices, bob.data)
 }
 
 
@@ -86,33 +107,11 @@ get_vertices :: proc {
 	get_vertices_obj,
 	get_vertices_bob,
 }
-get_vertices_obj :: proc(obj: Obj) -> []f32 {
+get_vertices_obj :: proc(obj: Obj) -> []Vertex {
 	return obj.vertices[:]
 }
-get_vertices_bob :: proc(bob: Bob) -> []f32 {
+get_vertices_bob :: proc(bob: Bob) -> []Vertex {
 	return get_slice_data(bob.header.vertices, bob.data)
-}
-
-get_normals :: proc {
-	get_normals_obj,
-	get_normals_bob,
-}
-get_normals_obj :: proc(obj: Obj) -> []f32 {
-	return obj.normals[:]
-}
-get_normals_bob :: proc(bob: Bob) -> []f32 {
-	return get_slice_data(bob.header.normals, bob.data)
-}
-
-get_texcoords :: proc {
-	get_texcoords_obj,
-	get_texcoords_bob,
-}
-get_texcoords_obj :: proc(obj: Obj) -> []f32 {
-	return obj.texcoords[:]
-}
-get_texcoords_bob :: proc(bob: Bob) -> []f32 {
-	return get_slice_data(bob.header.texcoords, bob.data)
 }
 
 get_material_list :: proc {

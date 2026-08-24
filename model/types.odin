@@ -1,13 +1,17 @@
 package model
 
+import "base:runtime"
+import "core:os"
 import "core:strings"
 
 MAX_POINTS_PER_FACE :: 8
 
-FLOATS_PER_VERTEX :: 3
+FLOATS_PER_POSITION :: 3
 FLOATS_PER_NORMAL :: 3
 FLOATS_PER_TEXCOORD :: 2
-FLOATS_PER_POINT :: FLOATS_PER_VERTEX + FLOATS_PER_NORMAL + FLOATS_PER_TEXCOORD
+FLOATS_PER_VERTEX :: FLOATS_PER_POSITION + FLOATS_PER_NORMAL + FLOATS_PER_TEXCOORD
+
+VERTICES_PER_FACE :: 3
 
 ENABLE_DEBUG_PRINTING :: false
 PADDING_BYTES: [8]u8
@@ -23,16 +27,15 @@ Slice :: struct($T: typeid) {
 }
 
 BobHeader :: struct #align (BOB_ALIGN) {
-	corner:    [3]f32,
-	dim:       [3]f32,
+	corner:   [3]f32,
+	dim:      [3]f32,
+
 	// Slices of the data chunk. Offsets are from the start of the file
-	strings:   Slice(byte),
-	mtllist:   Slice(Material),
-	meshes:    Slice(Mesh),
-	vertices:  Slice(f32),
-	normals:   Slice(f32),
-	texcoords: Slice(f32),
-	faces:     Slice(Face),
+	strings:  Slice(byte),
+	meshes:   Slice(Mesh),
+	mtllist:  Slice(Material),
+	vertices: Slice(Vertex),
+	indices:  Slice(u32),
 }
 
 
@@ -45,11 +48,11 @@ PointIndex :: enum {
 UnsignedPoint :: [PointIndex]u32
 SignedPoint :: [PointIndex]i32
 Face :: distinct [3]UnsignedPoint
-Vertex :: distinct [3]f32
+Position :: distinct [3]f32
 Normal :: distinct [3]f32
 TexCoord :: distinct [2]f32
 
-Point :: [FLOATS_PER_POINT]f32
+Vertex :: [FLOATS_PER_VERTEX]f32
 
 Obj :: struct {
 	header:    struct {
@@ -62,16 +65,30 @@ Obj :: struct {
 	meshes:    [dynamic]Mesh,
 	materials: [dynamic]Material,
 
-	// The points
-	points:    [dynamic]Point,
-	// The indicies for the triangles
+	// The vertices/points
+	vertices:  [dynamic]Vertex,
+	// The indices for the triangles
 	indices:   [dynamic]u32,
+}
+
+Result :: enum u32 {
+	Ok = 0,
+	Missing_Separator,
+	Invalid_Char,
+	Face_Invalid_Char,
+	Mtl_Path_Empty,
+	Mtl_Line_Missing_Separator,
+	Bob_File_Create_Error,
+	Bob_File_Write_Error,
+	Mtl_Load_Error,
+	Obj_Load_Error,
+	Bob_Load_Error,
 }
 
 Mesh :: struct #packed {
 	material:                 Slice(byte),
 	name:                     Slice(byte),
-	faces_start, faces_count: u32,
+	index_start, index_count: u32,
 }
 
 @(private)

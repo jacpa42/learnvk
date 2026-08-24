@@ -205,8 +205,15 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		commandBuffer = commandBuffer,
 		firstBinding = 0,
 		bindingCount = 1,
-		pBuffers = &engine.vk_model_buffer[CURRENT_MODEL][.model_points],
+		pBuffers = &engine.vk_model_buffer[CURRENT_MODEL][.model_vertices],
 		pOffsets = &pOffsets,
+	)
+
+	vk.CmdBindIndexBuffer(
+		commandBuffer = commandBuffer,
+		buffer = engine.vk_model_buffer[CURRENT_MODEL][.model_indices],
+		offset = 0,
+		indexType = .UINT32,
 	)
 
 	//
@@ -232,11 +239,12 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 			pDynamicOffsets = nil,
 		)
 
-		vk.CmdDraw(
-			commandBuffer,
-			vertexCount = mesh.faces_count,
-			firstVertex = mesh.faces_start,
+		vk.CmdDrawIndexed(
+			commandBuffer = commandBuffer,
+			indexCount = u32(len(model.get_mesh_indices(current_model, mesh))),
 			instanceCount = 1,
+			firstIndex = 0,
+			vertexOffset = 0,
 			firstInstance = 0,
 		)
 	}

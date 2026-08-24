@@ -23,7 +23,7 @@ CURRENT_MODEL := ModelTag.viking_room
 LOAD_MODELS := bit_set[ModelTag]{.viking_room}
 PIPELINE :: Pipeline.shader
 
-Bob :: model.Obj
+Bob :: model.Bob
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
 ENABLE_DEPTH_TEST :: true
@@ -36,7 +36,7 @@ MAX_MESH_TEXTURES :: 64
 MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
 MAX_SWAPCHAIN_IMAGES :: 8
 NUM_MODELS :: len([ModelTag]byte)
-POLYGON_MODE :: vk.PolygonMode.LINE
+POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
 STAGING_BUFFER_SIZE :: 64 * mem.Megabyte
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
@@ -119,10 +119,8 @@ Uniforms :: struct #all_or_none #align (16) {
 
 ModelBuffer :: enum {
 	// model data buffers
-	model_points,
 	model_vertices,
-	model_normals,
-	model_texcoords,
+	model_indices,
 }
 
 Action :: enum {
@@ -316,43 +314,18 @@ engine_init :: proc(engine: ^Engine) {
 	// Load the models we want to look at
 	//
 
-	temp_obj: model.Obj
 	for tag in LOAD_MODELS {
-		load_ok: bool
+		res: model.Result
+		m := &engine.models[tag]
 
-		defer if load_ok do engine.model_loaded |= {tag}
-
-		when type_of(engine.models[tag]) == model.Bob do model_path := BOB_PATH[tag]
-		when type_of(engine.models[tag]) == model.Obj do model_path := OBJ_PATH[tag]
-
-		model.load(&engine.models[tag], model_path, &load_ok)
-		if load_ok {
-			engine.model_loaded |= {tag}
-			continue
+		when type_of(engine.models[tag]) == model.Bob {
+			res = model.bob_load_or_create(m, BOB_PATH[tag], OBJ_PATH[tag])
+		} else {
+			res = model.obj_load(m, OBJ_PATH[tag])
 		}
 
-		log.warnf("Failed to load model, loading first from obj/mtl")
-		model.obj_init_or_clear(&temp_obj)
-
-		model.load(&temp_obj, OBJ_PATH[tag], &load_ok)
-		assert(load_ok)
-
-		err := model.bob_create_file(&temp_obj, BOB_PATH[tag])
-		if err != nil {
-			log.fatalf("Failed to create bob file \"{}\": {}", BOB_PATH[tag], err)
-			load_ok = false
-			continue
-		}
-
-		model.load(&engine.models[tag], BOB_PATH[tag], &load_ok)
-		if !load_ok {
-			log.fatalf("Failed to load \"{}\"", BOB_PATH[tag])
-			load_ok = false
-			continue
-		}
+		if res == .Ok do engine.model_loaded |= {tag}
 	}
-
-	model.destroy(&temp_obj)
 
 	assert(card(engine.model_loaded) > 0)
 	assert(CURRENT_MODEL in engine.model_loaded)
@@ -885,28 +858,16 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 
 			switch buffer_tag {
 
-			case .model_points:
-				memory_to_upload = to_bytes(model.get_faces(m))
+			case .model_indices:
+				memory_to_upload = to_bytes(model.get_all_indices(m))
 				size = vk.DeviceSize(len(memory_to_upload))
-				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
+				usage = {.INDEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_vertices:
 				memory_to_upload = to_bytes(model.get_vertices(m))
 				size = vk.DeviceSize(len(memory_to_upload))
-				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
-				desired_properties = {.DEVICE_LOCAL}
-
-			case .model_normals:
-				memory_to_upload = to_bytes(model.get_normals(m))
-				size = vk.DeviceSize(len(memory_to_upload))
-				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
-				desired_properties = {.DEVICE_LOCAL}
-
-			case .model_texcoords:
-				memory_to_upload = to_bytes(model.get_texcoords(m))
-				size = vk.DeviceSize(len(memory_to_upload))
-				usage = {.STORAGE_BUFFER, .TRANSFER_DST}
+				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 			}
 
@@ -1212,15 +1173,13 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	}
 
 	maxSets: u32
-	pool_sizes := [3]vk.DescriptorPoolSize {
+	pool_sizes := [2]vk.DescriptorPoolSize {
 		{type = .UNIFORM_BUFFER, descriptorCount = 0},
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 0},
-		{type = .STORAGE_BUFFER, descriptorCount = 0},
 	}
 	for layout in SHADER_PIPELINE_SET_LAYOUTS {
 		if layout.descriptorType == .UNIFORM_BUFFER do pool_sizes[0].descriptorCount += total_meshes
 		if layout.descriptorType == .COMBINED_IMAGE_SAMPLER do pool_sizes[1].descriptorCount += total_meshes
-		if layout.descriptorType == .STORAGE_BUFFER do pool_sizes[2].descriptorCount += total_meshes
 
 		maxSets += total_meshes
 	}
@@ -1359,24 +1318,6 @@ engine_configure_descriptor_set :: proc(
 		// 		imageView   = engine.vk_mesh_images[model_tag][mesh_index][.specular].view,
 		// 		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		// 	}
-
-		case .buf_pos:
-			buffer_info = vk.DescriptorBufferInfo {
-				buffer = engine.vk_model_buffer[model_tag][.model_vertices],
-				range  = vk.DeviceSize(vk.WHOLE_SIZE),
-			}
-
-		case .buf_normal:
-			buffer_info = vk.DescriptorBufferInfo {
-				buffer = engine.vk_model_buffer[model_tag][.model_normals],
-				range  = vk.DeviceSize(vk.WHOLE_SIZE),
-			}
-
-		case .buf_texcoord:
-			buffer_info = vk.DescriptorBufferInfo {
-				buffer = engine.vk_model_buffer[model_tag][.model_texcoords],
-				range  = vk.DeviceSize(vk.WHOLE_SIZE),
-			}
 		}
 
 		write_ds := vk.WriteDescriptorSet {
