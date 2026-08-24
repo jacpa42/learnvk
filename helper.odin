@@ -32,7 +32,8 @@ cmd_oneshot_end :: proc(cmdbuf: vk.CommandBuffer, queue: vk.Queue) {
 	result = vk.QueueSubmit(queue, 1, &submit_info, fence = 0)
 	ensure(result == .SUCCESS)
 
-	vk.QueueWaitIdle(queue)
+	result = vk.QueueWaitIdle(queue)
+	ensure(result == .SUCCESS)
 }
 
 find_format :: proc(

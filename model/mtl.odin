@@ -6,46 +6,6 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
-starts_with := strings.starts_with
-
-ENABLE_LOG :: true
-
-Mtl :: struct {
-	strings:   ^[dynamic]byte,
-	materials: ^[dynamic]Material,
-}
-
-MaterialString :: enum {
-	name,
-	map_Kd, // diffuse
-	map_Ks, // specular
-	map_Ke, // emissive
-	map_Ka, // ambient
-	map_d, // alpha / dissolve
-	map_bump, // normal
-}
-
-Material :: struct {
-	strings:            [MaterialString]Slice(byte),
-	illum:              Illumination,
-	Ns, Ni, d, Tr:      f32,
-	Tf, Ka, Kd, Ks, Ke: [3]f32,
-}
-
-Illumination :: enum u32 {
-	Color_on_and_Ambient_off                                           = 0,
-	Color_on_and_Ambient_on                                            = 1,
-	Highlight_on                                                       = 2,
-	Reflection_on_and_Ray_trace_on                                     = 3,
-	Transparency_Glass_on_Reflection_Ray_trace_on                      = 4,
-	Reflection_Fresnel_on_and_Ray_trace_on                             = 5,
-	Transparency_Refraction_on_Reflection_Fresnel_off_and_Ray_trace_on = 6,
-	Transparency_Refraction_on_Reflection_Fresnel_on_and_Ray_trace_on  = 7,
-	Reflection_on_and_Ray_trace_off                                    = 8,
-	Transparency_Glass_on_Reflection_Ray_trace_off                     = 9,
-	Casts_shadows_onto_invisible_surfaces                              = 10,
-}
-
 mtl_load :: proc(mtl: Mtl, path: string, ok: ^bool = nil) {
 	if len(path) == 0 {
 		if ok != nil do ok^ = false
@@ -175,7 +135,7 @@ mtl_append_string :: proc(mtl: Mtl, data: string) -> (str: Slice(byte)) {
 mtl_parse_string :: proc(line: string) -> (o: string) {
 	space := strings.index_byte(line, ' ')
 	if space == -1 {
-		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": string empty", line)}
+		when ODIN_DEBUG do log.warnf("Failed to parse \"{}\": string empty", line)
 		return
 	}
 
@@ -188,7 +148,7 @@ mtl_parse_f32 :: proc(line: string) -> (v: f32, ok: bool) {
 	if space == -1 {
 		ok = false
 
-		when ENABLE_LOG {log.warnf("Failed to parse \"{}\"", line)}
+		when ODIN_DEBUG do log.warnf("Failed to parse \"{}\"", line)
 
 		return
 	}
@@ -197,7 +157,7 @@ mtl_parse_f32 :: proc(line: string) -> (v: f32, ok: bool) {
 }
 
 mtl_parse_3_f32 :: proc(line: string) -> (v: [3]f32, ok: bool) {
-	when ENABLE_LOG do defer if !ok do log.warnf("Failed to parse \"{}\"", line)
+	when ODIN_DEBUG do defer if !ok do log.warnf("Failed to parse \"{}\"", line)
 
 	space0 := strings.index_byte(line, ' ')
 	space1 := space0 + 1 + strings.index_byte(line[space0 + 1:], ' ')
@@ -226,7 +186,7 @@ mtl_parse_illum :: proc(line: string) -> (illum: Illumination, ok: bool) {
 	if space == -1 {
 		ok = false
 
-		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": no space found", line)}
+		when ODIN_DEBUG do log.warnf("Failed to parse \"{}\": no space found", line)
 
 		return
 	}
@@ -235,15 +195,13 @@ mtl_parse_illum :: proc(line: string) -> (illum: Illumination, ok: bool) {
 	if len(bytes) == 0 {
 		ok = false
 
-		when ENABLE_LOG {log.warnf("Failed to parse \"{}\": empty after space", line)}
+		when ODIN_DEBUG do log.warnf("Failed to parse \"{}\": empty after space", line)
 
 		return
 	}
 
 	for b in bytes {
-		when ODIN_DEBUG {
-			assert(b >= '0' && b <= '9')
-		}
+		when ODIN_DEBUG do assert(b >= '0' && b <= '9')
 		illum = illum * Illumination(10) + Illumination(b - '0')
 	}
 

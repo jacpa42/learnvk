@@ -51,6 +51,25 @@ obj_get_mesh_name_index :: proc(obj: Obj, mesh_index: int) -> string {
 	return get_slice_string(get_meshes(obj)[mesh_index].name, obj.strings[:])
 }
 
+get_mesh_material_name :: proc {
+	obj_get_mesh_material_name,
+	bob_get_mesh_material_name,
+	bob_get_mesh_material_name_index,
+	obj_get_mesh_material_name_index,
+}
+obj_get_mesh_material_name :: proc(obj: Obj, mesh: Mesh) -> string {
+	return get_slice_string(mesh.material, obj.strings[:])
+}
+bob_get_mesh_material_name :: proc(bob: Bob, mesh: Mesh) -> string {
+	return get_slice_string(mesh.material, bob.data)
+}
+bob_get_mesh_material_name_index :: proc(bob: Bob, mesh_index: int) -> string {
+	return get_slice_string(get_meshes(bob)[mesh_index].material, bob.data)
+}
+obj_get_mesh_material_name_index :: proc(obj: Obj, mesh_index: int) -> string {
+	return get_slice_string(get_meshes(obj)[mesh_index].material, obj.strings[:])
+}
+
 get_faces :: proc {
 	get_faces_obj,
 	get_faces_bob,

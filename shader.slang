@@ -1,8 +1,8 @@
 enum Flag : uint {
-    has_diffuse,
-    has_emmisive,
-    has_normal,
-    has_specular,
+    has_diffuse  = 1,
+    has_emmisive = 2,
+    has_normal   = 4,
+    has_specular = 8,
 }
 
 struct Vertex {
@@ -18,7 +18,7 @@ struct VertexOutput {
 };
 
 struct UniformBuffer {
-    uint     flags; // Bit set of Flag
+    Flag     flags; // Bit set of Flag
     float3   lightdir;
     float4x4 screen_from_world;
     float4x4 world_from_model;
@@ -33,9 +33,9 @@ StructuredBuffer<float> buf_texcoord;
 
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;
-Sampler2D tex_emmisive;
-Sampler2D tex_normal;
-Sampler2D tex_specular;
+// Sampler2D tex_emmisive;
+// Sampler2D tex_normal;
+// Sampler2D tex_specular;
 
 [shader("vertex")]
 VertexOutput vertex(
@@ -66,12 +66,6 @@ VertexOutput vertex(
     return output;
 }
 
-[ForceInline]
-bool contains(uint flags, Flag f) {
-    return (flags & (1 << uint(f))) > 0;
-}
-
-
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
     float4 col = float4(input.color, 1.0);
@@ -79,7 +73,7 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     //
     // Diffuse texture sampling
     //
-    if (contains(uniforms.flags, Flag.has_diffuse)) {
+    if ((uniforms.flags & Flag.has_diffuse) > 0) {
         float2 texcoord = float2(
             buf_texcoord[input.texcoord * 2],
             buf_texcoord[input.texcoord * 2 + 1],
@@ -87,11 +81,7 @@ float4 fragment(VertexOutput input) : SV_TARGET {
         col.xyz *= tex_diffuse.Sample(texcoord).xyz;
     }
 
-    // TODO:
-    // has_emmisive,
-    // has_gloss,
-    // has_normal,
-    // has_specular,
+    col.xyz=float3(1.0);
 
     return col;
 }

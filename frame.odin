@@ -68,10 +68,15 @@ frame :: proc(engine: ^Engine) {
 	//
 	engine_fill_cmd_buffer(engine)
 
+	//
+	// Submit the commands to the gpu
+	//
 	engine_submit_and_present_cmd_buffer(engine)
 }
 
 engine_fill_cmd_buffer :: proc(engine: ^Engine) {
+	commandBuffer := engine.vk_cmdbufs[engine.vk_frame_index]
+
 	//
 	// Begin recording the command buffer
 	//
@@ -80,41 +85,26 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		pInheritanceInfo = nil,
 	}
 
-	vk.BeginCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index], &begin_info)
-	defer vk.EndCommandBuffer(engine.vk_cmdbufs[engine.vk_frame_index])
+	vk.BeginCommandBuffer(commandBuffer, &begin_info)
+	defer vk.EndCommandBuffer(commandBuffer)
 
 	//
 	// Make the image optimal to use as a colour attachment (ie render target?)
 	//
 	image_change_layout(
-		cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
+		cmdbuf = commandBuffer,
 		image = engine.vk_swapchain_images[engine.vk_image_index],
 		old_layout = .UNDEFINED,
 		new_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		src_access = {},
 		dst_access = {.COLOR_ATTACHMENT_WRITE},
-		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
+		src_stage = {.TOP_OF_PIPE},
 		dst_stage = {.COLOR_ATTACHMENT_OUTPUT},
 		aspect_mask = {.COLOR},
 	)
 
-	image_change_layout(
-		cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
-		image = engine.vk_depth_image,
-		old_layout = .UNDEFINED,
-		new_layout = .DEPTH_ATTACHMENT_OPTIMAL,
-		src_access = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-		dst_access = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-		src_stage = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-		dst_stage = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-		aspect_mask = {.DEPTH},
-	)
-
-	//
-	// At the end of the frame, convert the image back so we can present it
-	//
 	defer image_change_layout(
-		cmdbuf = engine.vk_cmdbufs[engine.vk_frame_index],
+		cmdbuf = commandBuffer,
 		image = engine.vk_swapchain_images[engine.vk_image_index],
 		old_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		new_layout = .PRESENT_SRC_KHR,
@@ -123,6 +113,24 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		src_stage = {.COLOR_ATTACHMENT_OUTPUT},
 		dst_stage = {.BOTTOM_OF_PIPE},
 		aspect_mask = {.COLOR},
+	)
+
+
+	//
+	// Change the depth buffer to be optimal for a depth attachment
+	//
+	// TODO: Do I need to do this each frame?
+	//
+	image_change_layout(
+		cmdbuf = commandBuffer,
+		image = engine.vk_depth_image,
+		old_layout = .UNDEFINED,
+		new_layout = .DEPTH_ATTACHMENT_OPTIMAL,
+		src_access = {},
+		dst_access = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+		src_stage = {.TOP_OF_PIPE},
+		dst_stage = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+		aspect_mask = {.DEPTH},
 	)
 
 	//
@@ -134,7 +142,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
-		clearValue = vk.ClearValue{color = {uint32 = {0x74, 0x16, 0x18, 0xff}}},
+		clearValue = vk.ClearValue{color = {float32 = {0.455, 0.086, 0.094, 1.0}}},
 	}
 
 	depth_attachment_info := vk.RenderingAttachmentInfo {
@@ -143,7 +151,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
-		clearValue = vk.ClearValue{depthStencil = {depth = 10, stencil = 0}},
+		clearValue = vk.ClearValue{depthStencil = {depth = 1, stencil = 0}},
 	}
 
 
@@ -162,8 +170,8 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Render to the image_view
 	//
-	vk.CmdBeginRendering(engine.vk_cmdbufs[engine.vk_frame_index], &render_info)
-	defer vk.CmdEndRendering(engine.vk_cmdbufs[engine.vk_frame_index])
+	vk.CmdBeginRendering(commandBuffer, &render_info)
+	defer vk.CmdEndRendering(commandBuffer)
 
 	//
 	// Update the uniform buffer
@@ -181,13 +189,9 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Run the graphics pipeline
 	//
-	vk.CmdBindPipeline(
-		engine.vk_cmdbufs[engine.vk_frame_index],
-		.GRAPHICS,
-		engine.vk_render_pipeline,
-	)
-	vk.CmdSetViewport(engine.vk_cmdbufs[engine.vk_frame_index], 0, 1, &engine.vk_viewport)
-	vk.CmdSetScissor(engine.vk_cmdbufs[engine.vk_frame_index], 0, 1, &engine.vk_scissor)
+	vk.CmdBindPipeline(commandBuffer, .GRAPHICS, engine.vk_render_pipeline)
+	vk.CmdSetViewport(commandBuffer, 0, 1, &engine.vk_viewport)
+	vk.CmdSetScissor(commandBuffer, 0, 1, &engine.vk_scissor)
 
 	//
 	// Bind vertex buffers
@@ -195,9 +199,10 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	assert(CURRENT_MODEL in engine.model_loaded)
 	current_model := engine.models[CURRENT_MODEL]
 
+	// TODO: we can have 1 buffer per model and then just use offsets into into.
 	pOffsets: vk.DeviceSize = 0
 	vk.CmdBindVertexBuffers(
-		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+		commandBuffer = commandBuffer,
 		firstBinding = 0,
 		bindingCount = 1,
 		pBuffers = &engine.vk_model_buffer[CURRENT_MODEL][.model_points],
@@ -208,8 +213,16 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	// Draw all our meshes
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
+		// fmt.eprintfln(
+		// 	"drawing faces {} [{}..{}] with material {}",
+		// 	model.get_mesh_name(current_model, mesh),
+		// 	mesh.faces_start,
+		// 	mesh.faces_start + mesh.faces_count,
+		// 	model.get_mesh_material_name(current_model, mesh),
+		// )
+
 		vk.CmdBindDescriptorSets(
-			commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
+			commandBuffer = commandBuffer,
 			pipelineBindPoint = .GRAPHICS,
 			layout = engine.vk_pipeline_layout,
 			firstSet = 0,
@@ -220,7 +233,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		)
 
 		vk.CmdDraw(
-			engine.vk_cmdbufs[engine.vk_frame_index],
+			commandBuffer,
 			vertexCount = mesh.faces_count,
 			firstVertex = mesh.faces_start,
 			instanceCount = 1,
@@ -349,7 +362,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> (u: Uniforms) {
 		screen_from_world = linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
-			far = 100,
+			far = 10,
 			near = 0.1,
 		),
 		world_from_model  = linalg.matrix4_look_at_f32(

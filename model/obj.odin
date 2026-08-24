@@ -2,7 +2,6 @@ package model
 
 import "core:fmt"
 import "core:math/bits"
-import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:simd"
@@ -11,64 +10,14 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 
-MAX_POINTS_PER_FACE :: 8
-ENABLE_DEBUG_PRINTING :: false
-DEFAULT_SLICE_ALIGNMENT :: align_of(u32)
-PADDING_BYTES: [8]u8
-
-PointIndex :: enum {
-	vertex,
-	texcoord,
-	normal,
-}
-
-UnsignedPoint :: [PointIndex]u32
-SignedPoint :: [PointIndex]i32
-Face :: distinct [3]UnsignedPoint
-Vertex :: distinct [3]f32
-Normal :: distinct [3]f32
-TexCoord :: distinct [2]f32
-
-Obj :: struct {
-	// essentially an arena for our string data
-	strings:   [dynamic]byte,
-
-	// Raw data
-	vertices:  [dynamic]f32, // 3 bytes per vertex
-	normals:   [dynamic]f32, // 3 bytes per vertex
-	texcoords: [dynamic]f32, // 2 bytes per vertex
-
-	// The triangles
-	faces:     [dynamic]Face,
-
-	// Meshes and materials
-	meshes:    [dynamic]Mesh,
-	materials: [dynamic]Material,
-}
-
-Mesh :: struct {
-	material:                 Slice(byte),
-	name:                     Slice(byte),
-	faces_start, faces_count: u32,
-}
-
-@(private = "file")
-ParsedFace :: struct {
-	points_len: u32,
-	points:     struct #raw_union {
-		unsigned: [MAX_POINTS_PER_FACE]UnsignedPoint,
-		signed:   [MAX_POINTS_PER_FACE]SignedPoint,
-	},
-}
+starts_with := strings.starts_with
 
 // odinfmt: disable
 obj_dump_info :: proc(obj: ^Obj) {
 	info :: fmt.eprintf
 
-	info("{} faces     : len={} size={}\n", rawptr(obj), len(obj.faces), slice.size(obj.faces[:]))
-	info("{} vertices  : len={} size={}\n", rawptr(obj), len(obj.vertices), slice.size(obj.vertices[:]))
-	info("{} normals   : len={} size={}\n", rawptr(obj), len(obj.normals), slice.size(obj.normals[:]))
-	info("{} texcoords : len={} size={}\n", rawptr(obj), len(obj.texcoords), slice.size(obj.texcoords[:]))
+	info("{} points  : len={} size={}\n", rawptr(obj), len(obj.points), slice.size(obj.points[:]))
+	info("{} indices : len={} size={}\n", rawptr(obj), len(obj.indices), slice.size(obj.indices[:]))
 	info("{} strings   : {}\n", rawptr(obj), string(obj.strings[:]))
 
 	for mesh, i in obj.meshes {
@@ -100,24 +49,23 @@ obj_dump_info :: proc(obj: ^Obj) {
 
 obj_init_or_clear :: proc(m: ^Obj) {
 	assert(m != nil)
-	make_or_clear(&m.vertices)
-	make_or_clear(&m.normals)
-	make_or_clear(&m.texcoords)
+
 	make_or_clear(&m.strings)
-	make_or_clear(&m.faces)
 	make_or_clear(&m.meshes)
 	make_or_clear(&m.materials)
+	make_or_clear(&m.points)
+	make_or_clear(&m.indices)
 }
 
 obj_destroy :: proc(m: ^Obj) {
+	assert(m != nil)
+
 	defer m^ = {}
-	delete(m.meshes)
-	delete(m.vertices)
-	delete(m.normals)
-	delete(m.texcoords)
-	delete(m.faces)
 	delete(m.strings)
+	delete(m.meshes)
 	delete(m.materials)
+	delete(m.points)
+	delete(m.indices)
 }
 
 obj_load :: proc(obj: ^Obj, path: string, ok: ^bool = nil) {
@@ -125,7 +73,6 @@ obj_load :: proc(obj: ^Obj, path: string, ok: ^bool = nil) {
 
 	timer: time.Stopwatch
 	time.stopwatch_start(&timer)
-
 
 	raw, oserr := os.read_entire_file(path, context.temp_allocator)
 	if oserr != nil {
@@ -154,7 +101,75 @@ obj_load :: proc(obj: ^Obj, path: string, ok: ^bool = nil) {
 	return
 }
 
-obj_get_bounding_box :: proc(m: Obj) -> (corner, size: [3]f32) {
+//
+// Constructs a (deduplicated) array of points and indicies
+//
+obj_points_make :: proc(
+	points: ^[dynamic]Point,
+	indices: ^[dynamic]u32,
+	faces: []Face,
+	vertices, normals, texcoords: []f32,
+	deduplicate_vertex_data := true,
+) {
+	point_compare :: proc "contextless" (p0, p1: Point, eps: f32 = 1e-1) -> bool {
+		diff := simd.abs(simd.sub(simd.from_array(p0), simd.from_array(p1)))
+		return simd.reduce_add_bisect(diff) < eps
+	}
+
+	find :: proc(point: Point, points: []Point) -> int {
+		for seen, index in points {
+			if point_compare(seen, point) do return index
+		}
+		return -1
+	}
+
+
+	max_num_unique_points := len(faces) * 3
+
+	clear(points)
+	non_zero_reserve(points, max_num_unique_points)
+
+	clear(indices)
+	non_zero_reserve(indices, max_num_unique_points)
+
+	for face in faces do for point in face {
+		new_point := Point {
+
+			// vertex
+			vertices[point[.vertex] * 3 + 0],
+			vertices[point[.vertex] * 3 + 1],
+			vertices[point[.vertex] * 3 + 2],
+
+			// normal
+			normals[point[.normal] * 3 + 0],
+			normals[point[.normal] * 3 + 1],
+			normals[point[.normal] * 3 + 2],
+
+			// texcoord
+			texcoords[point[.texcoord] * 2 + 0],
+			texcoords[point[.texcoord] * 2 + 1],
+		}
+
+		new_point_index: int
+
+		if deduplicate_vertex_data {
+			new_point_index = find(new_point, points[:])
+			if new_point_index == -1 {
+				new_point_index = len(points)
+				append(points, new_point)
+			}
+		} else {
+			new_point_index := len(points)
+			append(points, new_point)
+		}
+
+		append(indices, u32(new_point_index))
+	}
+
+	return
+}
+
+obj_get_bounding_box :: proc(m: Obj) -> (corner, dim: [3]f32) {
 	i: int
 	min, max: #simd[4]f32
 
@@ -168,17 +183,28 @@ obj_get_bounding_box :: proc(m: Obj) -> (corner, size: [3]f32) {
 	}
 
 	corner = simd.to_array(min).xyz
-	size = simd.to_array(max - min).xyz
+	dim = simd.to_array(max - min).xyz
 	return
 }
 
 // odinfmt: disable
 obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (ok: bool) {
 
-    // Always append some default values
-    obj_append(m, Vertex{})
-    obj_append(m, Normal{})
-    obj_append(m, TexCoord{})
+    temp_vertices  := make([dynamic]f32, len = FLOATS_PER_VERTEX)
+    temp_normals   := make([dynamic]f32, len = FLOATS_PER_NORMAL)
+    temp_texcoords := make([dynamic]f32, len = FLOATS_PER_TEXCOORD)
+    temp_faces     := make([dynamic]Face)
+
+    defer delete(temp_vertices)
+    defer delete(temp_normals)
+    defer delete(temp_texcoords)
+    defer delete(temp_faces)
+
+    meshes      := &m.meshes
+    string_data := &m.strings
+    materials   := &m.materials
+    points      := &m.points
+    indices     := &m.indices
 
     current_material: string
 
@@ -200,74 +226,78 @@ obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (ok: bool) {
         NEW_MAT  :: ('u' << 8) | 's'
 
 		switch prefix {
-		case VERTEX:   obj_append(m, parse_vertex_pos(noprefix) or_return)
-		case NORMAL:   obj_append(m, parse_vertex_normal(noprefix) or_return)
-		case TEXCOORD: obj_append(m, parse_vertex_texcoord(noprefix) or_return)
-		case FACE:     obj_append(m, parse_face(noprefix) or_return)
-		case OBJECT:   obj_append_mesh(m, noprefix, current_material)
-		case GROUP:    obj_append_mesh(m, noprefix, current_material)
-		case MTLLIB:   obj_load_mtl(m, obj_path, noprefix) or_return
+
+		case VERTEX:   obj_append_vertex(&temp_vertices,    parse_vertex_pos(noprefix) or_return)
+		case NORMAL:   obj_append_normal(&temp_normals,     parse_vertex_normal(noprefix) or_return)
+		case TEXCOORD: obj_append_texcoord(&temp_texcoords, parse_vertex_texcoord(noprefix) or_return)
+		case FACE:     obj_append_face(meshes, &temp_faces, parse_face(noprefix) or_return)
+
+		case OBJECT:   obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
+		case GROUP:    obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
+
+		case MTLLIB:   obj_load_mtl(string_data, materials, obj_path, noprefix) or_return
 		case NEW_MAT:  current_material = noprefix
+
 		case:          continue
 		}
 	}
+
+    m.header.corner, m.header.dim = obj_get_bounding_box(m^)
+
+    obj_points_make(
+        points  = &m.points,
+        indices = &m.indices,
+
+        faces     = temp_faces[:],
+        vertices  = temp_vertices[:],
+        normals   = temp_normals[:],
+        texcoords = temp_texcoords[:],
+    )
 
 	ok = true
 	return
 }
 // odinfmt: enable
 
-obj_get_all_points :: proc(m: Obj) -> []UnsignedPoint {
-	len := len(m.faces) / len(Face)
-	return ([^]UnsignedPoint)(raw_data(m.faces[:]))[:len]
-}
-
-obj_load_mtl :: proc(m: ^Obj, obj_path, mtl_rel_path: string) -> (ok: bool) {
+obj_load_mtl :: proc(
+	strings: ^[dynamic]byte,
+	materials: ^[dynamic]Material,
+	obj_path, mtl_rel_path: string,
+) -> (
+	ok: bool,
+) {
 	mtl_path, err := filepath.join(
 		[]string{filepath.dir(obj_path), mtl_rel_path},
 		context.temp_allocator,
 	)
 	if err != nil do return false
 
-	mtl := Mtl {
-		strings   = &m.strings,
-		materials = &m.materials,
-	}
-
-	mtl_load(mtl, mtl_path, &ok)
-
+	mtl_load({strings, materials}, mtl_path, &ok)
 	return
 }
 
-obj_append :: proc {
-	obj_append_vertex,
-	obj_append_parsed_face,
-	obj_append_normal,
-	obj_append_texcoord,
-	obj_append_mesh,
-}
-
-obj_append_mesh :: proc(m: ^Obj, mesh_name: string, material_name: string) {
-	assert(len(m.strings) + len(mesh_name) < bits.U32_MAX)
-
+obj_append_mesh :: proc(
+	strings: ^[dynamic]byte,
+	meshes: ^[dynamic]Mesh,
+	faces: ^[dynamic]Face,
+	mesh_name: string,
+	material_name: string,
+) {
 	append(
-		&m.meshes,
+		meshes,
 		Mesh {
-			name = {u32(len(m.strings[:])), u32(len(mesh_name))},
-			material = {u32(len(m.strings[:]) + len(mesh_name)), u32(len(material_name))},
-			faces_start = u32(len(m.faces[:])),
+			name = {u32(len(strings[:])), u32(len(mesh_name))},
+			material = {u32(len(strings[:]) + len(mesh_name)), u32(len(material_name))},
+			faces_start = u32(len(faces[:])),
 			faces_count = 0,
 		},
 	)
 
 	// Must be after the above append call and order matters
-	append(&m.strings, mesh_name)
-	append(&m.strings, material_name)
+	append(strings, mesh_name, material_name)
 }
 
-obj_append_parsed_face :: proc(m: ^Obj, parsed_face: ParsedFace) {
-	assert(m != nil)
-
+obj_append_face :: proc(meshes: ^[dynamic]Mesh, faces: ^[dynamic]Face, parsed_face: ParsedFace) {
 	if len(m.meshes) > 0 {
 		m.meshes[len(m.meshes) - 1].faces_count += parsed_face.points_len - 2
 	}
@@ -287,9 +317,9 @@ obj_append_parsed_face :: proc(m: ^Obj, parsed_face: ParsedFace) {
 	}
 }
 
-obj_append_vertex :: proc(m: ^Obj, v: Vertex) {append(&m.vertices, v[0], v[1], v[2])}
-obj_append_normal :: proc(m: ^Obj, n: Normal) {append(&m.normals, n[0], n[1], n[2])}
-obj_append_texcoord :: proc(m: ^Obj, t: TexCoord) {append(&m.texcoords, t[0], t[1])}
+obj_append_vertex :: proc(vertices: ^[dynamic]f32, v: Vertex) {append(vertices, v[0], v[1], v[2])}
+obj_append_normal :: proc(normals: ^[dynamic]f32, n: Normal) {append(normals, n[0], n[1], n[2])}
+obj_append_texcoord :: proc(texcoords: ^[dynamic]f32, t: TexCoord) {append(texcoords, t[0], t[1])}
 
 parse_vertex_pos :: #force_inline proc(line: string) -> (v: Vertex, ok: bool) {
 	return parse_vector(Vertex, line)
@@ -366,112 +396,5 @@ parse_face :: proc(line: string) -> (face: ParsedFace, ok: bool) {
 	ok = true
 	return
 
-}
-
-BobCreateContext :: struct {
-	// specify this field to make sure that all slices are aligned to this value
-	align: int,
-	size:  int,
-	data:  [dynamic; 32][]byte,
-}
-
-bobctx_add :: proc(ctx: ^BobCreateContext, data: []$T) -> (slc: Slice(T)) {
-
-	slc.start = u32(ctx.size)
-	slc.size = u32(slice.size(data))
-
-	ctx.size += slice.size(data)
-	append(&ctx.data, slice.to_bytes(data))
-
-	//
-	// Make sure that the slice is aligned
-	//
-	if ctx.align == 0 do ctx.align = DEFAULT_SLICE_ALIGNMENT
-
-	padding := ctx.size % ctx.align; if padding > 0 {
-		ctx.size += padding
-		append(&ctx.data, PADDING_BYTES[:padding])
-	}
-
-	assert(ctx.size < bits.U32_MAX)
-
-	return
-}
-
-bobctx_make :: proc(header: ^BobHeader, obj: ^Obj) -> (ctx: BobCreateContext) {
-	ctx.align = align_of(u32)
-
-	_ = bobctx_add(&ctx, mem.ptr_to_bytes(header))
-
-
-	//
-	// We need to be careful with our strings
-	//
-	header.strings = bobctx_add(&ctx, obj.strings[:])
-
-	for &material in obj.materials[:] {
-		for &mat in material.strings {
-			mat.start += header.strings.start
-		}
-	}
-
-	for &mesh in obj.meshes[:] {
-		mesh.material.start += header.strings.start
-		mesh.name.start += header.strings.start
-	}
-
-
-	//
-	// everything else (plain old data)
-	//
-	header.mtllist = bobctx_add(&ctx, obj.materials[:])
-	header.meshes = bobctx_add(&ctx, obj.meshes[:])
-	header.vertices = bobctx_add(&ctx, obj.vertices[:])
-	header.normals = bobctx_add(&ctx, obj.normals[:])
-	header.texcoords = bobctx_add(&ctx, obj.texcoords[:])
-	header.faces = bobctx_add(&ctx, obj.faces[:])
-
-	return
-}
-
-bobctx_write :: proc(ctx: BobCreateContext, f: ^os.File) -> (err: os.Error) {
-	written_size: int
-	for data in ctx.data {
-		written_size += os.write(f, data) or_return
-	}
-
-	assert(written_size == ctx.size)
-
-	err = nil
-	return
-}
-
-
-// Modifies the strings in the mtl and obj, thus we need a pointer to each
-bob_create_file :: proc(obj: ^Obj, output_path: string) -> (err: os.Error) {
-	corner, dim := obj_get_bounding_box(obj^)
-
-	header := BobHeader {
-		corner = corner,
-		dim    = dim,
-	}
-
-	ctx := bobctx_make(&header, obj)
-
-	ofile := os.create(output_path) or_return
-	defer os.close(ofile)
-
-	bobctx_write(ctx, ofile) or_return
-
-	err = nil
-	return
-}
-
-make_or_clear :: proc(item: ^[dynamic]$T, cap := 0) {
-	if item^ == nil {
-		item^ = make([dynamic]T, 0, cap)
-	} else {
-		clear(item)
-	}
 }
 
