@@ -13,7 +13,13 @@ obj_get_mtl_path :: proc(obj: Obj) -> string {
 	return get_slice_string(obj.mtl_path, obj.strings[:])
 }
 
-bob_load_or_create :: proc(bob: ^Bob, bob_path, obj_path: string) -> (result: Result) {
+bob_load_or_create :: proc(
+	bob: ^Bob,
+	bob_path, obj_path: string,
+	flipx, flipy: bool,
+) -> (
+	result: Result,
+) {
 	result = bob_load(bob, bob_path)
 	if result == .Ok do return
 
@@ -21,7 +27,7 @@ bob_load_or_create :: proc(bob: ^Bob, bob_path, obj_path: string) -> (result: Re
 	obj_init_or_clear(&temp_obj)
 	defer destroy(&temp_obj)
 
-	obj_load(&temp_obj, obj_path) or_return
+	obj_load(&temp_obj, obj_path, flipx = flipx, flipy = flipy) or_return
 	bob_create_file(&temp_obj, bob_path) or_return
 	bob_load(bob, bob_path) or_return
 

@@ -8,6 +8,7 @@ import vk "vendor:vulkan"
 @(private = "file")
 alloc: mem.Allocator
 
+// TODO: is this thread safe?
 vk_alloc_tracker: struct {
 	num_alloc, num_free, num_realloc: int,
 	total_alloc, total_free:          int,

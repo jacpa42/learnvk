@@ -65,7 +65,7 @@ obj_destroy :: proc(m: ^Obj) {
 	delete(m.indices)
 }
 
-obj_load :: proc(obj: ^Obj, path: string) -> (result: Result) {
+obj_load :: proc(obj: ^Obj, path: string, flipx, flipy: bool) -> (result: Result) {
 	assert(path != {})
 
 	timer: time.Stopwatch
@@ -77,7 +77,7 @@ obj_load :: proc(obj: ^Obj, path: string) -> (result: Result) {
 		return .Obj_Load_Error
 	}
 
-	result = obj_load_memory(obj, path, raw)
+	result = obj_load_memory(obj, path, raw, flipx = flipx, flipy = flipy)
 	if result != .Ok do return result
 
 	if result == .Ok {
@@ -104,27 +104,23 @@ obj_make_vertices :: proc(
 	indices: ^[dynamic]u32,
 	faces: []Face,
 	positions, normals, texcoords: []f32,
+	flipy, flipx: bool,
 ) {
-	point_compare :: proc "contextless" (v0, v1: Vertex, eps: f32 = 1e-1) -> bool {
-		diff := simd.abs(simd.sub(simd.from_array(v0), simd.from_array(v1)))
-		return simd.reduce_add_bisect(diff) < eps
-	}
-
-	find_vertex :: proc(v: Vertex, vs: []Vertex) -> int {
-		for seen, index in vs {
-			if point_compare(seen, v) do return index
-		}
-		return -1
-	}
-
 
 	max_num_unique_points := len(faces) * 3
+
+	seen := make(map[Vertex]int, max_num_unique_points)
+	defer delete(seen)
 
 	clear(vertices)
 	non_zero_reserve(vertices, max_num_unique_points)
 
 	clear(indices)
 	non_zero_reserve(indices, max_num_unique_points)
+
+	dx, dy: f32 = 0, 0
+	if flipx do dx = -1
+	if flipy do dy = -1
 
 	for face in faces do for point in face {
 		new_point := Vertex {
@@ -140,20 +136,14 @@ obj_make_vertices :: proc(
 			normals[point[.normal] * 3 + 2],
 
 			// texcoord
-			texcoords[point[.texcoord] * 2 + 0],
-			texcoords[point[.texcoord] * 2 + 1],
+			texcoords[point[.texcoord] * 2 + 0] + dx,
+			texcoords[point[.texcoord] * 2 + 1] + dy,
 		}
 
-		new_point_index: int
-
-		when DEDUPLICATE_VERTEX_DATA {
-			new_point_index = find_vertex(new_point, vertices[:])
-			if new_point_index == -1 {
-				new_point_index = len(vertices)
-				append(vertices, new_point)
-			}
-		} else {
+		new_point_index, found := seen[new_point]
+		if !found {
 			new_point_index = len(vertices)
+			seen[new_point] = len(vertices)
 			append(vertices, new_point)
 		}
 
@@ -161,6 +151,54 @@ obj_make_vertices :: proc(
 	}
 
 	return
+}
+
+obj_cache_mesh_indicies :: proc(
+	meshes: []Mesh,
+	strings: ^[dynamic]byte,
+	mttlist: ^[dynamic]Material,
+) {
+	fallback: ^Material
+
+	if len(mttlist) == 0 {
+		log.warnf("Appending a default (stub) material as this thing has no textures")
+		fallback = mtl_new_material({strings, mttlist})
+		fallback.strings[.name] = mtl_new_string({strings, mttlist}, "stub")
+
+		fallback.Ns = 250
+		fallback.Ka = 1
+		fallback.Kd = 0.8
+		fallback.Ks = 0.5
+		fallback.Ni = 1.5
+		fallback.d = 1
+		fallback.illum = .Highlight_on
+	} else {
+		fallback = &mttlist[0]
+	}
+
+	assert(fallback != nil)
+
+	outer: for &mesh in meshes {
+		mesh_material_name := get_slice_string(mesh.material, strings[:])
+
+		for material, material_index in mttlist[:] {
+
+			material_name := get_slice_string(material.strings[.name], strings[:])
+
+			if mesh_material_name == material_name {
+				mesh.materal_index = u32(material_index)
+				continue outer
+			}
+		}
+
+		//
+		// If we didn't find one, we put just use stub
+		//
+		if len(mesh_material_name) == 0 {
+			mesh.material = fallback.strings[.name]
+			mesh.materal_index = 0
+		}
+	}
 }
 
 obj_get_bounding_box :: proc(positions: []f32) -> (corner, dim: [3]f32) {
@@ -184,85 +222,95 @@ obj_get_bounding_box :: proc(positions: []f32) -> (corner, dim: [3]f32) {
 }
 
 // odinfmt: disable
-obj_load_memory :: proc(m: ^Obj, obj_path: string, data: []byte) -> (result: Result) {
+obj_load_memory :: proc(
+	m: ^Obj,
+	obj_path: string,
+	data: []byte,
+    flipx, flipy: bool,
+) -> (
+	result: Result,
+) {
+	temp_positions := make([dynamic]f32, len = FLOATS_PER_POSITION)
+	temp_normals   := make([dynamic]f32, len = FLOATS_PER_NORMAL)
+	temp_texcoords := make([dynamic]f32, len = FLOATS_PER_TEXCOORD)
+	temp_faces     := make([dynamic]Face)
 
-    temp_positions := make([dynamic]f32, len = FLOATS_PER_POSITION)
-    temp_normals   := make([dynamic]f32, len = FLOATS_PER_NORMAL)
-    temp_texcoords := make([dynamic]f32, len = FLOATS_PER_TEXCOORD)
-    temp_faces     := make([dynamic]Face)
+	defer delete(temp_positions)
+	defer delete(temp_normals)
+	defer delete(temp_texcoords)
+	defer delete(temp_faces)
 
-    defer delete(temp_positions)
-    defer delete(temp_normals)
-    defer delete(temp_texcoords)
-    defer delete(temp_faces)
+	meshes := &m.meshes
+	string_data := &m.strings
+	materials := &m.materials
+	vertices := &m.vertices
+	indices := &m.indices
 
-    meshes      := &m.meshes
-    string_data := &m.strings
-    materials   := &m.materials
-    vertices    := &m.vertices
-    indices     := &m.indices
-
-    current_material: string
+	current_material: string
 
 	line_iter := string(data)
 	for line in strings.split_lines_iterator(&line_iter) {
 		if len(line) < 2 || line[0] == '#' {
-            continue
-        }
+			continue
+		}
 
-        prefix := (u16(line[0])<<8) | u16(line[1])
+		prefix := (u16(line[0]) << 8) | u16(line[1])
 
-        noprefix := line[strings.index_byte(line, ' ') + 1:]
-        noprefix = strings.trim(noprefix, " ")
+		noprefix := line[strings.index_byte(line, ' ') + 1:]
+		noprefix = strings.trim(noprefix, " ")
 
-        when ENABLE_DEBUG_PRINTING {
-            fmt.eprintfln("with pref :: \"{}\"", line)
-            fmt.eprintfln("no prefix :: \"{}\"", noprefix)
-        }
+		when ENABLE_DEBUG_PRINTING {
+			fmt.eprintfln("with pref :: \"{}\"", line)
+			fmt.eprintfln("no prefix :: \"{}\"", noprefix)
+		}
 
 
-        POSITION :: ('v' << 8) | ' '
-        NORMAL   :: ('v' << 8) | 'n'
-        TEXCOORD :: ('v' << 8) | 't'
-        FACE     :: ('f' << 8) | ' '
-        OBJECT   :: ('o' << 8) | ' '
-        GROUP    :: ('g' << 8) | ' '
-        MTLLIB   :: ('m' << 8) | 't'
-        NEW_MAT  :: ('u' << 8) | 's'
+		POSITION :: ('v' << 8) | ' '
+		NORMAL   :: ('v' << 8) | 'n'
+		TEXCOORD :: ('v' << 8) | 't'
+		FACE     :: ('f' << 8) | ' '
+		OBJECT   :: ('o' << 8) | ' '
+		GROUP    :: ('g' << 8) | ' '
+		MTLLIB   :: ('m' << 8) | 't'
+		NEW_MAT  :: ('u' << 8) | 's'
 
 		switch prefix {
 
 		case POSITION: append(&temp_positions, parse_v3(noprefix) or_return)
-		case NORMAL:   append(&temp_normals,   parse_v3(noprefix) or_return)
+		case NORMAL: append(&temp_normals, parse_v3(noprefix) or_return)
 		case TEXCOORD: append(&temp_texcoords, parse_v2(noprefix) or_return)
-		case FACE:     obj_append_face(meshes, &temp_faces, parse_face(noprefix) or_return)
+		case FACE: obj_append_face(meshes, &temp_faces, parse_face(noprefix) or_return)
 
-		case OBJECT:   obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
-		case GROUP:    obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
+		case OBJECT: obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
+		case GROUP: obj_append_mesh(string_data, meshes, &temp_faces, noprefix, current_material)
 
-		case MTLLIB:   obj_load_mtl(string_data, materials, &m.mtl_path, obj_path, noprefix) or_return
-		case NEW_MAT:  current_material = noprefix
+		case MTLLIB: obj_load_mtl(string_data, materials, &m.mtl_path, obj_path, noprefix) or_return
+		case NEW_MAT: current_material = noprefix
 
-		case:          continue
+		case: continue
 		}
 	}
 
-    m.header.corner, m.header.dim = obj_get_bounding_box(temp_positions[:])
+	m.header.corner, m.header.dim = obj_get_bounding_box(temp_positions[:])
 
-    obj_make_vertices(
-        vertices  = vertices,
-        indices   = indices,
+	obj_make_vertices(
+		vertices  = vertices,
+		indices   = indices,
+		faces     = temp_faces[:],
+		positions = temp_positions[:],
+		normals   = temp_normals[:],
+		texcoords = temp_texcoords[:],
+        flipx     = flipx,
+        flipy     = flipy,
+	)
 
-        faces     = temp_faces[:],
-        positions = temp_positions[:],
-        normals   = temp_normals[:],
-        texcoords = temp_texcoords[:],
-    )
+	obj_cache_mesh_indicies(m.meshes[:], &m.strings, &m.materials)
 
-    result = .Ok
+	result = .Ok
 	return
 }
 // odinfmt: enable
+
 
 obj_load_mtl :: proc(
 	strings: ^[dynamic]byte,

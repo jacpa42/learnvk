@@ -208,24 +208,10 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		pOffsets = &pOffsets,
 	)
 
-	vk.CmdBindIndexBuffer(
-		commandBuffer = commandBuffer,
-		buffer = engine.vk_model_buffer[CURRENT_MODEL][.model_indices],
-		offset = 0,
-		indexType = .UINT32,
-	)
-
 	//
 	// Draw all our meshes
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
-		fmt.eprintfln(
-			"drawing faces {} [{}..{}] with material {}",
-			model.get_mesh_name(current_model, mesh),
-			mesh.index_start,
-			mesh.index_start + mesh.index_count,
-			model.get_mesh_material_name(current_model, mesh),
-		)
 
 		vk.CmdBindDescriptorSets(
 			commandBuffer = commandBuffer,
@@ -238,9 +224,16 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 			pDynamicOffsets = nil,
 		)
 
+		vk.CmdBindIndexBuffer(
+			commandBuffer = commandBuffer,
+			buffer = engine.vk_model_buffer[CURRENT_MODEL][.model_indices],
+			offset = vk.DeviceSize(mesh.index_start) * size_of(u32),
+			indexType = .UINT32,
+		)
+
 		vk.CmdDrawIndexed(
 			commandBuffer = commandBuffer,
-			indexCount = u32(len(model.get_mesh_indices(current_model, mesh))),
+			indexCount = mesh.index_count,
 			instanceCount = 1,
 			firstIndex = 0,
 			vertexOffset = 0,

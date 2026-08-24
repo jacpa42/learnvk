@@ -2,8 +2,6 @@ package model
 
 import "core:strings"
 
-DEDUPLICATE_VERTEX_DATA :: false
-
 MAX_POINTS_PER_FACE :: 8
 
 FLOATS_PER_POSITION :: 3
@@ -22,7 +20,7 @@ Bob :: struct {
 	data:   []u8,
 }
 
-Slice :: struct($T: typeid) {
+Slice :: struct($T: typeid) #align (BOB_ALIGN) {
 	start, size: u32,
 }
 
@@ -95,6 +93,7 @@ Result :: enum u32 {
 
 Mesh :: struct #packed {
 	material:                 Slice(byte),
+	materal_index:            u32,
 	name:                     Slice(byte),
 	index_start, index_count: u32,
 }

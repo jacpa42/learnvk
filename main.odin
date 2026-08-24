@@ -1,14 +1,20 @@
 package learnvk
 
+//
+// Fix the mtl file for our dark lord homie
+//
+
 import "base:runtime"
 import "core:c"
 import "core:debug/trace"
 import "core:log"
 import "core:math/bits"
 import "core:mem"
+import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "core:thread"
 import "core:time"
 import "model"
 import "vendor:glfw"
@@ -16,8 +22,8 @@ import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.viking_room
-LOAD_MODELS := bit_set[ModelTag]{.bunny, .dragon, .viking_room, .dark_lord}
+CURRENT_MODEL := ModelTag.dark_lord
+LOAD_MODELS := bit_set[ModelTag]{.bunny, .dragon, .viking_room, .dark_lord, CURRENT_MODEL}
 PIPELINE :: Pipeline.shader
 
 Model :: model.Bob
@@ -35,28 +41,35 @@ MAX_SWAPCHAIN_IMAGES :: 8
 NUM_MODELS :: len([ModelTag]byte)
 POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
-STAGING_BUFFER_SIZE :: 64 * mem.Megabyte
+STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
 
 to_bytes :: slice.to_bytes
 
 OBJ_PATH := [ModelTag]string {
-	.bmw         = "assets/bmw/bmw.obj",
 	.bunny       = "assets/bunny/bunny.obj",
 	.dark_lord   = "assets/darklord/darklord.obj",
 	.dragon      = "assets/dragon/dragon.obj",
 	.viking_room = "assets/viking_room/viking_room.obj",
+	.sponza      = "assets/sponza/sponza.obj",
 }
 
 BOB_PATH := [ModelTag]string {
-	.bmw         = "assets/bmw/bmw.bob",
 	.bunny       = "assets/bunny/bunny.bob",
 	.dark_lord   = "assets/darklord/darklord.bob",
 	.dragon      = "assets/dragon/dragon.bob",
 	.viking_room = "assets/viking_room/viking_room.bob",
+	.sponza      = "assets/sponza/sponza.bob",
+}
+
+FLIP_TEXCOORDS_ON_LOAD := #partial [ModelTag]bool {
+	.viking_room = true,
 }
 
 g_logger: runtime.Logger
+physical_device_features: vk.PhysicalDeviceFeatures
+physical_device_properties: vk.PhysicalDeviceProperties
+physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties
 
 Image :: struct {
 	image: vk.Image,
@@ -77,11 +90,11 @@ Texture :: struct {
 }
 
 ModelTag :: enum {
-	bmw,
 	bunny,
 	dragon,
 	viking_room,
 	dark_lord,
+	sponza,
 }
 
 ImageViewTag :: enum {
@@ -150,9 +163,6 @@ Engine :: struct {
 	// Physical and Logical device
 	//
 	vk_physical_device:                     vk.PhysicalDevice,
-	vk_physical_device_features:            vk.PhysicalDeviceFeatures,
-	vk_physical_device_properties:          vk.PhysicalDeviceProperties,
-	vk_physical_device_memory_properties:   vk.PhysicalDeviceMemoryProperties,
 	vk_physical_device_required_extensions: [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
 	vk_device:                              vk.Device,
 	vk_queue:                               vk.Queue,
@@ -201,6 +211,7 @@ Engine :: struct {
 
 	// One for each mesh in each model
 	vk_mesh_images:                         [ModelTag][][MaterialType]Texture,
+
 	// one allocation for all images
 	vk_image_sampler:                       [MaterialType]vk.Sampler,
 
@@ -297,7 +308,7 @@ engine_init :: proc(engine: ^Engine) {
 		pitch       = 0,
 		yaw         = 0,
 		pos         = {0, 0, 0},
-		up          = {0, 0, -1},
+		up          = {0, 1, 0},
 	}
 
 	//
@@ -310,10 +321,16 @@ engine_init :: proc(engine: ^Engine) {
 
 		when type_of(engine.models[tag]) == model.Bob {
 			model_path := BOB_PATH[tag]
-			res = model.bob_load_or_create(m, model_path, OBJ_PATH[tag])
+			res = model.bob_load_or_create(
+				m,
+				model_path,
+				OBJ_PATH[tag],
+				flipx = false,
+				flipy = FLIP_TEXCOORDS_ON_LOAD[tag],
+			)
 		} else {
 			model_path := OBJ_PATH[tag]
-			res = model.obj_load(m, model_path)
+			res = model.obj_load(m, model_path, FLIP_TEXCOORDS_ON_LOAD[tag])
 		}
 
 		if res == .Ok {
@@ -873,6 +890,13 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 				continue
 			}
 
+			log.infof(
+				"Uploading {}.{} ({} Mb)",
+				model_tag,
+				buffer_tag,
+				f32(slice.size(memory_to_upload)) * 1e-6,
+			)
+
 			//
 			// Create the buffer
 			//
@@ -937,7 +961,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 				addressModeW            = .REPEAT, // SamplerAddressMode,
 				mipLodBias              = 0, // f32,
 				anisotropyEnable        = true, // b32,
-				maxAnisotropy           = engine.vk_physical_device_properties.limits.maxSamplerAnisotropy, // f32,
+				maxAnisotropy           = physical_device_properties.limits.maxSamplerAnisotropy, // f32,
 				compareEnable           = false, // b32,
 				compareOp               = .ALWAYS, // CompareOp,
 				minLod                  = 0, // f32,
@@ -960,31 +984,87 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Setup a single pixel fallback buffer
 	//
-	engine.fallback_texture = {
-		engine_create_image(
-			engine = engine,
+	{
+		engine.fallback_texture = {
+			engine_create_image(
+				device = engine.vk_device,
+				alloc = &engine.vk_alloc,
+				width = 1,
+				height = 1,
+				format = .R8G8B8A8_SNORM,
+				usage = {.SAMPLED, .TRANSFER_DST},
+				desired_properties = {.DEVICE_LOCAL},
+			),
+		}
+
+		pixel_data := []u8{0x00, 0x00, 0x00, 0x00}
+		engine_upload_image_data(
+			engine,
+			engine.fallback_texture.image,
+			pixel_data,
 			width = 1,
 			height = 1,
-			format = .R8G8B8A8_SNORM,
-			usage = {.SAMPLED, .TRANSFER_DST},
-			desired_properties = {.DEVICE_LOCAL},
-		),
+		)
 	}
 
-	pixel := []u8{0x00, 0x00, 0x00, 0x00}
-	engine_upload_image_data(engine, engine.fallback_texture.image, pixel, width = 1, height = 1)
+	//
+	// Define all the texture load tasks
+	//
+	tasks := make([dynamic]LoadTaskData, 0, 64, context.temp_allocator)
+	defer for t in tasks {
+		if t.output.data != nil {
+			stb_image.image_free(raw_data(t.output.data))
+		}
+	}
+
+	for tag in engine.model_loaded {
+
+		meshes := model.get_meshes(engine.models[tag])
+		model := engine.models[tag]
+
+		engine.vk_mesh_images[tag] = make([][MaterialType]Texture, len(meshes))
+
+		for mesh, mesh_index in meshes {
+			mesh_textures_ptr := &engine.vk_mesh_images[tag][mesh_index]
+			engine_define_texture_load_task(&tasks, mesh_textures_ptr, model, tag, mesh)
+		}
+	}
 
 	//
-	// Load all the required textures
+	// Divy up the tasks
 	//
+	threads: [32]^thread.Thread
+	num_threads := min(os.get_processor_core_count(), len(threads))
+	chunk_size := len(tasks) / num_threads
 
-	for model_tag in engine.model_loaded {
+	log.infof("Loading images on {} (chunk_size {})", num_threads, chunk_size)
 
-		num_meshes := len(model.get_meshes(engine.models[model_tag]))
-		engine.vk_mesh_images[model_tag] = make([][MaterialType]Texture, num_meshes)
+	for i in 0 ..< num_threads {
+		threads[i] = thread.create_and_start_with_poly_data3(
+			arg1 = engine.vk_device,
+			arg2 = &engine.vk_alloc,
+			arg3 = tasks[i * chunk_size:(i + 1) * chunk_size],
+			fn = eat_load_task,
+		)
+	}
 
-		for mesh_index in 0 ..< num_meshes {
-			engine_load_material_textures(engine, model_tag, mesh_index)
+	//
+	// Eat the remainder on main thread
+	//
+	eat_load_task(engine.vk_device, &engine.vk_alloc, tasks[num_threads * chunk_size:])
+	for t in threads[0:num_threads] do thread.destroy(t)
+
+	for task in tasks {
+		if task.output.ok {
+			engine_upload_image_data(
+				engine,
+				task.input.texture.image,
+				task.output.data,
+				task.output.width,
+				task.output.height,
+			)
+		} else {
+			log.warnf("Didn't succeed in the task load for \"{}\"", task.input.texture_cpath)
 		}
 	}
 }
@@ -1095,7 +1175,8 @@ engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh
 
 		mesh_texture^ = {
 			engine_create_image(
-				engine = engine,
+				device = engine.vk_device,
+				alloc = &engine.vk_alloc,
 				width = width,
 				height = height,
 				format = texture_format,
@@ -1450,10 +1531,10 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 	search_device: for physical_device in devices {
 		ensure(physical_device != nil)
 
-		vk.GetPhysicalDeviceProperties(physical_device, &engine.vk_physical_device_properties)
-		vk.GetPhysicalDeviceFeatures(physical_device, &engine.vk_physical_device_features)
+		vk.GetPhysicalDeviceProperties(physical_device, &physical_device_properties)
+		vk.GetPhysicalDeviceFeatures(physical_device, &physical_device_features)
 
-		log.info("Checking", transmute(cstring)(&engine.vk_physical_device_properties.deviceName))
+		log.info("Checking", transmute(cstring)(&physical_device_properties.deviceName))
 
 		//
 		// Define the features we need for our application to run
@@ -1467,11 +1548,11 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 
 		if device_meets_requirements(
 			physical_device,
-			engine.vk_physical_device_properties,
-			engine.vk_physical_device_features,
+			physical_device_properties,
+			physical_device_features,
 			engine.vk_physical_device_required_extensions[:],
 		) {
-			log.info("Using", transmute(cstring)(&engine.vk_physical_device_properties.deviceName))
+			log.info("Using", transmute(cstring)(&physical_device_properties.deviceName))
 			engine.vk_physical_device = physical_device
 			break search_device
 		}
@@ -1480,7 +1561,7 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 
 	vk.GetPhysicalDeviceMemoryProperties(
 		engine.vk_physical_device,
-		&engine.vk_physical_device_memory_properties,
+		&physical_device_memory_properties,
 	)
 }
 
@@ -1584,7 +1665,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 		ppEnabledExtensionNames = raw_data(&engine.vk_physical_device_required_extensions),
 
 		// features
-		pEnabledFeatures        = &engine.vk_physical_device_features,
+		pEnabledFeatures        = &physical_device_features,
 	}
 
 	result = vk.CreateDevice(
@@ -1870,11 +1951,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	memory_requirements: vk.MemoryRequirements
 	vk.GetImageMemoryRequirements(engine.vk_device, engine.vk_depth_image, &memory_requirements)
 
-	memory_type_index := device_get_memory_type_index(
-		&engine.vk_physical_device_memory_properties,
-		memory_requirements,
-		{.DEVICE_LOCAL},
-	)
+	memory_type_index := device_get_memory_type_index(memory_requirements, {.DEVICE_LOCAL})
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,

@@ -48,7 +48,7 @@ VertexOutput vertex(
 
     output.view_dir = uniforms.camera_position - vertex_world.xyz;
 
-    output.color = float3(max(dot(uniforms.lightdir, input.norm), 0.01));
+    output.color = float3(dot(uniforms.lightdir, input.norm));
 
     output.texcoord = input.texcoord;
 
@@ -57,7 +57,7 @@ VertexOutput vertex(
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    float2 coords = float2(input.texcoord.x, 1.0 - input.texcoord.y);
+    float2 coords = float2(input.texcoord.x, input.texcoord.y);
     float4 col = float4(1.0);
 
 #ifdef ENABLE_DIFFUSE

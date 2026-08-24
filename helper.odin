@@ -158,13 +158,14 @@ engine_upload_image_data :: proc(
 	)
 }
 
-engine_create_image :: proc(
-	engine: ^Engine,
+engine_create_image :: proc "contextless" (
+	device: vk.Device,
 	#any_int width: u32,
 	#any_int height: u32,
 	format: vk.Format,
 	usage: vk.ImageUsageFlags,
 	desired_properties: vk.MemoryPropertyFlags,
+	alloc: ^vk.AllocationCallbacks,
 ) -> (
 	image: vk.Image,
 	view: vk.ImageView,
@@ -184,35 +185,31 @@ engine_create_image :: proc(
 		initialLayout = .UNDEFINED,
 	}
 
-	result := vk.CreateImage(engine.vk_device, &create_info, &engine.vk_alloc, &image)
-	ensure(result == .SUCCESS)
+	result := vk.CreateImage(device, &create_info, alloc, &image)
+	ensure_contextless(result == .SUCCESS)
 
 	//
 	// Allocate memory for the image
 	//
 	requirements: vk.MemoryRequirements
-	vk.GetImageMemoryRequirements(engine.vk_device, image, &requirements)
+	vk.GetImageMemoryRequirements(device, image, &requirements)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
 		allocationSize  = requirements.size,
-		memoryTypeIndex = device_get_memory_type_index(
-			&engine.vk_physical_device_memory_properties,
-			requirements,
-			desired_properties,
-		),
+		memoryTypeIndex = device_get_memory_type_index(requirements, desired_properties),
 	}
 
-	result = vk.AllocateMemory(engine.vk_device, &alloc_info, &engine.vk_alloc, &memory)
-	ensure(result == .SUCCESS)
+	result = vk.AllocateMemory(device, &alloc_info, alloc, &memory)
+	ensure_contextless(result == .SUCCESS)
 
 	result = vk.BindImageMemory(
-		device = engine.vk_device,
+		device = device,
 		image = image,
 		memory = memory,
 		memoryOffset = 0, // TODO: What is this about?
 	)
-	ensure(result == .SUCCESS)
+	ensure_contextless(result == .SUCCESS)
 
 
 	view_create_info := vk.ImageViewCreateInfo {
@@ -222,8 +219,8 @@ engine_create_image :: proc(
 		format = format,
 		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 	}
-	result = vk.CreateImageView(engine.vk_device, &view_create_info, &engine.vk_alloc, &view)
-	ensure(result == .SUCCESS)
+	result = vk.CreateImageView(device, &view_create_info, alloc, &view)
+	ensure_contextless(result == .SUCCESS)
 
 	return
 }
@@ -250,11 +247,7 @@ engine_create_buffer :: proc(
 	requirements: vk.MemoryRequirements
 	vk.GetBufferMemoryRequirements(engine.vk_device, buffer, &requirements)
 
-	memory_type_index := device_get_memory_type_index(
-		&engine.vk_physical_device_memory_properties,
-		requirements,
-		desired_properties,
-	)
+	memory_type_index := device_get_memory_type_index(requirements, desired_properties)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
@@ -280,13 +273,14 @@ engine_create_buffer :: proc(
 // Given the properties of the currently bound physical device, find the memory
 // type we will use for the buffer given the memory requirements.
 //
-device_get_memory_type_index :: proc(
-	properties: ^vk.PhysicalDeviceMemoryProperties,
+device_get_memory_type_index :: proc "contextless" (
 	requirements: vk.MemoryRequirements,
 	desired_properties: vk.MemoryPropertyFlags,
 ) -> (
 	memory_type_index: u32,
 ) {
+	properties := physical_device_memory_properties
+
 	for ; memory_type_index < properties.memoryTypeCount; memory_type_index += 1 {
 		is_compatible := requirements.memoryTypeBits & (u32(1) << memory_type_index) > 0
 		has_desired_properties :=
@@ -298,7 +292,7 @@ device_get_memory_type_index :: proc(
 		}
 	}
 
-	assert(false)
+	assert_contextless(false)
 	return 0
 }
 
@@ -479,7 +473,7 @@ callback_cursor_move :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 	w, h := glfw.GetFramebufferSize(window)
 	if w <= 0 || h <= 0 do return
 
-	delta := engine.camera.sensitivity * [2]f32{f32(ypos), f32(xpos)}
+	delta := engine.camera.sensitivity * [2]f32{f32(-xpos), f32(ypos)}
 	glfw.SetCursorPos(window, 0, 0)
 
 	engine.camera.yaw -= delta.x
@@ -599,6 +593,7 @@ LoadTaskData :: struct {
 	// input
 	//
 	input:  struct #all_or_none {
+		texture:          ^Texture,
 		texture_cpath:    cstring,
 		desired_channels: i32,
 		format:           vk.Format,
@@ -616,46 +611,64 @@ LoadTaskData :: struct {
 	},
 }
 
-eat_load_task :: proc(t: ^LoadTaskData) {
-	assert(t.input.texture_cpath != nil)
-	assert(t.input.desired_channels != 0)
-	assert(t.input.format != .UNDEFINED)
+eat_load_task :: proc(
+	device: vk.Device,
+	alloc: ^vk.AllocationCallbacks,
+	task_array: []LoadTaskData,
+) {
+	for &t in task_array {
+		assert_contextless(t.input.texture_cpath != nil)
+		assert_contextless(t.input.desired_channels != 0)
+		assert_contextless(t.input.format != .UNDEFINED)
 
+		//
+		// Load pixels into RAM
+		//
+		width, height, channels: i32
+		data := stb_image.load(
+			t.input.texture_cpath,
+			&width,
+			&height,
+			&channels,
+			t.input.desired_channels,
+		)
 
-	//
-	// Load pixels into RAM
-	//
-	width, height, channels: i32
-	data := stb_image.load(
-		t.input.texture_cpath,
-		&width,
-		&height,
-		&channels,
-		t.input.desired_channels,
-	)
+		if data == nil {
+			t.output.ok = false
+			continue
+		}
 
-	if data == nil {
-		t.output.ok = false
-		return
+		data_len := int(width) * int(height) * int(t.input.desired_channels)
+
+		t.input.texture^ = {
+			engine_create_image(
+				device = device,
+				alloc = alloc,
+				width = width,
+				height = height,
+				format = t.input.format,
+				usage = {.SAMPLED, .TRANSFER_DST},
+				desired_properties = {.DEVICE_LOCAL},
+			),
+		}
+
+		t.output = {
+			width    = width,
+			height   = height,
+			channels = channels,
+			data     = data[:data_len],
+			ok       = true,
+		}
+
+		t.output.ok = true
 	}
-
-	data_len := int(width) * int(height) * int(t.input.desired_channels)
-
-	t.output = {
-		width    = width,
-		height   = height,
-		channels = channels,
-		data     = data[:data_len],
-		ok       = true,
-	}
-
-	return
 }
 
-engine_load_material_texture_data :: proc(
-	load_tasks: ^[dynamic]LoadTaskData,
+engine_define_texture_load_task :: proc(
+	load_tasks: ^[dynamic]LoadTaskData, // output,
 
 	// input
+	mesh_textures_ptr: ^[MaterialType]Texture,
 	this_model: Model,
 	model_tag: ModelTag,
 	mesh: model.Mesh,
@@ -684,7 +697,10 @@ engine_load_material_texture_data :: proc(
 		//
 		task: LoadTaskData
 
-		task.input = {get_texture_details(this_model, material, material_type) or_continue}
+		task.input = {
+			&mesh_textures_ptr[material_type],
+			get_texture_details(this_model, material, material_type) or_continue,
+		}
 
 		append(load_tasks, task)
 	}
