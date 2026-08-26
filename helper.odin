@@ -1,8 +1,10 @@
 package learnvk
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math"
+import "core:math/bits"
 import "core:mem"
 import "core:path/filepath"
 import "core:strings"
@@ -421,47 +423,74 @@ glfw_error_callback :: proc "c" (error: i32, description: cstring) {
 callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
 	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
 
-    activate := action != glfw.RELEASE
-	switch key {
+    ctrl    := (mods & glfw.MOD_CONTROL) > 0
+    down    := action != glfw.RELEASE
+    pressed := action == glfw.PRESS
 
-	case glfw.KEY_ESCAPE:
-		glfw.SetWindowShouldClose(window, true)
+	if key == glfw.KEY_ESCAPE do glfw.SetWindowShouldClose(window, true)
 
-	case glfw.KEY_R:
-        if activate do engine.disable_rotate = !engine.disable_rotate
+	if key == glfw.KEY_R && pressed do engine.disable_rotate = !engine.disable_rotate
 
-	case glfw.KEY_Q:
-        if activate {
+	if key == glfw.KEY_Q && pressed && card(engine.model_loaded) > 0 {
+        CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
+        for (CURRENT_MODEL not_in engine.model_loaded) {
             CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
-            for (CURRENT_MODEL not_in engine.model_loaded) {
-                CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
-            }
         }
+    }
 
-	case glfw.KEY_W:
-		if  activate do engine.actions += {.forward}
-		if !activate do engine.actions -= {.forward}
+	if key == glfw.KEY_W && down  do engine.actions += {.forward}
+	if key == glfw.KEY_W && !down do engine.actions -= {.forward}
 
-	case glfw.KEY_S:
-		if  activate do engine.actions += {.backward}
-		if !activate do engine.actions -= {.backward}
+	if key == glfw.KEY_A && down  do engine.actions += {.left}
+	if key == glfw.KEY_A && !down do engine.actions -= {.left}
 
-	case glfw.KEY_A:
-		if  activate do engine.actions += {.left}
-		if !activate do engine.actions -= {.left}
+	if key == glfw.KEY_S && down  do engine.actions += {.backward}
+	if key == glfw.KEY_S && !down do engine.actions -= {.backward}
 
-	case glfw.KEY_D:
-		if  activate do engine.actions += {.right}
-		if !activate do engine.actions -= {.right}
+	if key == glfw.KEY_D && down  do engine.actions += {.right}
+	if key == glfw.KEY_D && !down do engine.actions -= {.right}
 
-	case glfw.KEY_K:
-		if  activate do engine.actions += {.up}
-		if !activate do engine.actions -= {.up}
+	if key == glfw.KEY_K && down  do engine.actions += {.up}
+	if key == glfw.KEY_K && !down do engine.actions -= {.up}
 
-	case glfw.KEY_J:
-		if  activate do engine.actions += {.down}
-		if !activate do engine.actions -= {.down}
-	}
+	if key == glfw.KEY_J && down  do engine.actions += {.down}
+	if key == glfw.KEY_J && !down do engine.actions -= {.down}
+
+    //
+    // Flag toggling
+    //
+
+    if key == glfw.KEY_D && ctrl && pressed {
+        if .enable_diffuse in engine.shader_flags {
+            engine.shader_flags -= {.enable_diffuse}
+        } else {
+            engine.shader_flags += {.enable_diffuse}
+        }
+    }
+
+    if key == glfw.KEY_E && ctrl && pressed {
+        if .enable_emissive in engine.shader_flags {
+            engine.shader_flags -= {.enable_emissive}
+        } else {
+            engine.shader_flags += {.enable_emissive}
+        }
+    }
+
+    if key == glfw.KEY_H && ctrl && pressed {
+        if .enable_height in engine.shader_flags {
+            engine.shader_flags -= {.enable_height}
+        } else {
+            engine.shader_flags += {.enable_height}
+        }
+    }
+
+    if key == glfw.KEY_S && ctrl && pressed {
+        if .enable_specular in engine.shader_flags {
+            engine.shader_flags -= {.enable_specular}
+        } else {
+            engine.shader_flags += {.enable_specular}
+        }
+    }
 }
 // odinfmt: enable
 
@@ -547,22 +576,22 @@ get_texture_details :: proc(
 
 	switch material_type {
 	case .diffuse:
-		texture_rel_path = model.get_material_string(m, mtl, .map_Kd)
+		texture_rel_path = model.get_material_string(m, mtl, .diffuse)
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 
-	case .emmisive:
-		texture_rel_path = model.get_material_string(m, mtl, .map_Ke)
+	case .emissive:
+		texture_rel_path = model.get_material_string(m, mtl, .emissive)
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 
 	case .normal:
-		texture_rel_path = model.get_material_string(m, mtl, .map_bump)
+		texture_rel_path = model.get_material_string(m, mtl, .normal)
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 
 	case .specular:
-		texture_rel_path = model.get_material_string(m, mtl, .map_Ks)
+		texture_rel_path = model.get_material_string(m, mtl, .specular)
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 	}

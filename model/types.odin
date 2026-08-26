@@ -120,21 +120,42 @@ Mtl :: struct {
 	materials: ^[dynamic]Material,
 }
 
-MaterialString :: enum {
-	name,
-	map_Kd, // diffuse
-	map_Ks, // specular
-	map_Ke, // emissive
-	map_Ka, // ambient
-	map_d, // alpha / dissolve
-	map_bump, // normal
-}
-
 Material :: struct #packed {
 	strings:            [MaterialString]Slice(byte),
 	illum:              Illumination,
 	Ns, Ni, d, Tr:      f32,
 	Tf, Ka, Kd, Ks, Ke: [3]f32,
+}
+
+MaterialString :: enum {
+	name     = 0,
+
+	//
+	diffuse  = 1,
+	map_Kd   = 1,
+
+	//
+	specular = 2,
+	map_Ks   = 2,
+
+	//
+	emissive = 3,
+	map_Ke   = 3,
+
+	//
+	ambient  = 4,
+	map_Ka   = 4,
+
+	//
+	dissolve = 5,
+	alpha    = 5,
+	map_d    = 5,
+
+	//
+	normal   = 6,
+	bump     = 6,
+	map_bump = 6,
+	map_Bump = 6,
 }
 
 Illumination :: enum u32 {

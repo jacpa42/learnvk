@@ -1,0 +1,49 @@
+newmtl cacodemon_armor
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 1.000 1.000 1.000
+Ns 100
+map_Kd textures/cacodemon_armor.png
+map_Ks textures/cacodemon_armor_s.png
+map_Bump textures/cacodemon_armor_n.png
+map_d textures/cacodemon_armor_g.png
+map_Ka textures/cacodemon_armor_sss.png
+
+newmtl cacodemon_arms
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 1.000 1.000 1.000
+Ns 100
+map_Kd textures/cacodemon_arms.png
+map_Ks textures/cacodemon_arms_s.png
+map_Bump textures/cacodemon_arms_n.png
+map_d textures/cacodemon_arms_g.png
+map_Ka textures/cacodemon_arms_sss.png
+
+newmtl cacodemon_body
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 1.000 1.000 1.000
+Ns 100
+map_Kd textures/cacodemon_body.png
+map_Ks textures/cacodemon_body_s.png
+map_Bump textures/cacodemon_body_n.png
+map_d textures/cacodemon_body_g.png
+map_Ka textures/cacodemon_body_sss.png
+
+newmtl cacodemon_eye
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 1.000 1.000 1.000
+Ns 100
+map_Kd textures/cacodemon_eye.png
+map_Bump textures/cacodemon_eye_n.png
+
+newmtl cacodemon_wounds
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 1.000 1.000 1.000
+Ns 100
+map_Kd textures/cacodemon_body.png
+map_Ks textures/cacodemon_body_s.png
+map_Bump textures/cacodemon_body_n.png

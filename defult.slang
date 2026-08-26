@@ -1,6 +1,6 @@
 enum Flag : uint {
     has_diffuse  = 1,
-    has_emmisive = 2,
+    has_emissive = 2,
     has_normal   = 4,
     has_specular = 8,
 }
@@ -30,7 +30,7 @@ ConstantBuffer<UniformBuffer> uniforms;
 
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;
-// Sampler2D tex_emmisive;
+// Sampler2D tex_emissive;
 // Sampler2D tex_normal;
 // Sampler2D tex_specular;
 

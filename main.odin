@@ -1,19 +1,15 @@
 package learnvk
 
-//
-// Fix the mtl file for our dark lord homie
-//
-
 import "base:runtime"
 import "core:c"
 import "core:debug/trace"
+import "core:fmt"
 import "core:log"
+import "core:math"
 import "core:math/bits"
 import "core:mem"
 import "core:os"
-import "core:path/filepath"
 import "core:slice"
-import "core:strings"
 import "core:thread"
 import "core:time"
 import "model"
@@ -21,230 +17,10 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.dark_lord
-LOAD_MODELS := bit_set[ModelTag]{.bunny, .dragon, .viking_room, .dark_lord, CURRENT_MODEL}
-PIPELINE :: Pipeline.shader
-
-Model :: model.Bob
-
-CULL_MODE :: vk.CullModeFlags{.BACK}
-ENABLE_DEPTH_TEST :: true
-ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
-FRAMES_IN_FLIGHT :: 2
-FRONT_FACE :: vk.FrontFace.CLOCKWISE
-LINE_WIDTH: f32 : 1
-MAX_DYNAMIC_STATE :: 90
-MAX_MESH_TEXTURES :: 64
-MAX_PHYSICAL_DEVICE_EXTENSIONS :: 4
-MAX_SWAPCHAIN_IMAGES :: 8
-NUM_MODELS :: len([ModelTag]byte)
-POLYGON_MODE :: vk.PolygonMode.FILL
-PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
-STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
-VULKAN_API_VERSION :: vk.API_VERSION_1_3
-
-to_bytes :: slice.to_bytes
-
-OBJ_PATH := [ModelTag]string {
-	.bunny       = "assets/bunny/bunny.obj",
-	.dark_lord   = "assets/darklord/darklord.obj",
-	.dragon      = "assets/dragon/dragon.obj",
-	.viking_room = "assets/viking_room/viking_room.obj",
-	.sponza      = "assets/sponza/sponza.obj",
-}
-
-BOB_PATH := [ModelTag]string {
-	.bunny       = "assets/bunny/bunny.bob",
-	.dark_lord   = "assets/darklord/darklord.bob",
-	.dragon      = "assets/dragon/dragon.bob",
-	.viking_room = "assets/viking_room/viking_room.bob",
-	.sponza      = "assets/sponza/sponza.bob",
-}
-
-FLIP_TEXCOORDS_ON_LOAD := #partial [ModelTag]bool {
-	.viking_room = true,
-}
-
 g_logger: runtime.Logger
 physical_device_features: vk.PhysicalDeviceFeatures
 physical_device_properties: vk.PhysicalDeviceProperties
 physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties
-
-Image :: struct {
-	image: vk.Image,
-	view:  vk.ImageView,
-}
-
-MaterialType :: enum {
-	diffuse,
-	emmisive,
-	normal,
-	specular,
-}
-
-Texture :: struct {
-	image:  vk.Image,
-	view:   vk.ImageView,
-	memory: vk.DeviceMemory,
-}
-
-ModelTag :: enum {
-	bunny,
-	dragon,
-	viking_room,
-	dark_lord,
-	sponza,
-}
-
-ImageViewTag :: enum {
-	swapchain,
-	model_texture,
-	depth_buffer,
-}
-
-UniformFlag :: enum {
-	enable_diffuse,
-	enable_emmisive,
-	enable_normal,
-	enable_specular,
-}
-
-Uniforms :: struct #all_or_none #align (16) {
-	camera_position:   [3]f32,
-	lightdir:          [3]f32,
-	screen_from_world: matrix[4, 4]f32,
-	world_from_model:  matrix[4, 4]f32,
-	model_from_vertex: matrix[4, 4]f32,
-}
-
-ModelBuffer :: enum {
-	// model data buffers
-	model_vertices,
-	model_indices,
-}
-
-Action :: enum {
-	up,
-	down,
-	forward,
-	backward,
-	left,
-	right,
-}
-
-Engine :: struct {
-	//
-	// Windowing stuff
-	//
-	window:                                 glfw.WindowHandle,
-	stop_rendering:                         bool,
-	framebuffer_resized:                    bool,
-	model_loaded:                           bit_set[ModelTag],
-	models:                                 [ModelTag]Model,
-
-	//
-	// Vulkan stuff
-	//
-	vk_alloc:                               vk.AllocationCallbacks,
-	vk_messenger:                           vk.DebugUtilsMessengerEXT,
-	vk_instance:                            vk.Instance,
-
-	//
-	// Stuff for eye position
-	//
-	actions:                                bit_set[Action],
-	disable_rotate:                         bool,
-	model_rotation:                         f32,
-	delta_time:                             f32,
-	camera:                                 Camera,
-
-	//
-	// Physical and Logical device
-	//
-	vk_physical_device:                     vk.PhysicalDevice,
-	vk_physical_device_required_extensions: [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
-	vk_device:                              vk.Device,
-	vk_queue:                               vk.Queue,
-	vk_render_queue_index:                  u32,
-	vk_surface:                             vk.SurfaceKHR,
-
-	//
-	// Swapchain
-	//
-	vk_min_image_count:                     u32,
-	vk_swapchain:                           vk.SwapchainKHR,
-	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
-	vk_swapchain_extent:                    vk.Extent2D,
-	vk_image_index:                         u32,
-	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
-	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
-
-	//
-	// Descriptor sets
-	//
-	vk_descriptor_pool:                     vk.DescriptorPool,
-	vk_set_layout:                          vk.DescriptorSetLayout,
-	// one per mesh
-	vk_descriptor_sets:                     [ModelTag][]vk.DescriptorSet,
-
-	//
-	// Uniform Buffers
-	//
-	vk_uniform_buffers:                     [FRAMES_IN_FLIGHT]vk.Buffer,
-	vk_uniform_buffers_memory:              [FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	vk_uniform_buffers_mmapped:             [FRAMES_IN_FLIGHT]rawptr,
-
-	//
-	// Vertex Buffers
-	//
-	vk_transfer_buffer_mmap:                rawptr,
-	vk_transfer_buffer:                     vk.Buffer,
-	vk_transfer_buffer_memory:              vk.DeviceMemory,
-	vk_model_buffer:                        [ModelTag][ModelBuffer]vk.Buffer,
-	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
-
-	//
-	// mesh textures
-	//
-	fallback_texture:                       Texture,
-
-	// One for each mesh in each model
-	vk_mesh_images:                         [ModelTag][][MaterialType]Texture,
-
-	// one allocation for all images
-	vk_image_sampler:                       [MaterialType]vk.Sampler,
-
-	//
-	// Depth image
-	//
-	vk_depth_image_format:                  vk.Format,
-	vk_depth_image:                         vk.Image,
-	vk_depth_image_view:                    vk.ImageView,
-	vk_depth_image_memory:                  vk.DeviceMemory,
-
-	//
-	// Pipeline
-	//
-	vk_pipeline_cache:                      vk.PipelineCache,
-	vk_render_pipeline:                     vk.Pipeline,
-	vk_viewport:                            vk.Viewport,
-	vk_scissor:                             vk.Rect2D,
-	vk_color_attachment:                    vk.PipelineColorBlendAttachmentState,
-	vk_pipeline_dynamic_state:              [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
-	vk_pipeline_shader:                     vk.ShaderModule,
-	vk_pipeline_layout:                     vk.PipelineLayout,
-
-	//
-	// Command buffer
-	//
-	vk_cmdpool:                             vk.CommandPool,
-	vk_frame_index:                         u32,
-	vk_cmdbufs:                             [FRAMES_IN_FLIGHT]vk.CommandBuffer,
-	vk_swapchain_semas:                     [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
-	vk_present_complete_semas:              [FRAMES_IN_FLIGHT]vk.Semaphore,
-	vk_draw_fences:                         [FRAMES_IN_FLIGHT]vk.Fence,
-}
 
 main :: proc() {
 	//
@@ -308,7 +84,7 @@ engine_init :: proc(engine: ^Engine) {
 		pitch       = 0,
 		yaw         = 0,
 		pos         = {0, 0, 0},
-		up          = {0, 1, 0},
+		up          = {0, 0, -1},
 	}
 
 	//
@@ -325,12 +101,17 @@ engine_init :: proc(engine: ^Engine) {
 				m,
 				model_path,
 				OBJ_PATH[tag],
-				flipx = false,
-				flipy = FLIP_TEXCOORDS_ON_LOAD[tag],
+				flipx = FLIP_TEXCOORDS_ON_LOAD[tag].flipx,
+				flipy = FLIP_TEXCOORDS_ON_LOAD[tag].flipy,
 			)
 		} else {
 			model_path := OBJ_PATH[tag]
-			res = model.obj_load(m, model_path, FLIP_TEXCOORDS_ON_LOAD[tag])
+			res = model.obj_load(
+				m,
+				model_path,
+				flipx = FLIP_TEXCOORDS_ON_LOAD[tag].flipx,
+				flipy = FLIP_TEXCOORDS_ON_LOAD[tag].flipy,
+			)
 		}
 
 		if res == .Ok {
@@ -997,7 +778,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 			),
 		}
 
-		pixel_data := []u8{0x00, 0x00, 0x00, 0x00}
+		pixel_data := []u8{0x00, 0xff, 0x00, 0x00}
 		engine_upload_image_data(
 			engine,
 			engine.fallback_texture.image,
@@ -1033,29 +814,33 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Divy up the tasks
 	//
-	threads: [32]^thread.Thread
-	num_threads := min(os.get_processor_core_count(), len(threads))
-	chunk_size := len(tasks) / num_threads
+	threads := make([]^thread.Thread, os.get_processor_core_count(), context.temp_allocator)
+	chunk_size := math.floor_div(len(tasks), len(threads) + 1)
+	num_tasks_consumed := 0
 
-	log.infof("Loading images on {} (chunk_size {})", num_threads, chunk_size)
-
-	for i in 0 ..< num_threads {
-		threads[i] = thread.create_and_start_with_poly_data3(
+	thread_index := 0
+	for num_tasks_consumed + chunk_size < len(tasks) && thread_index < len(threads) {
+		task_slice := tasks[num_tasks_consumed:num_tasks_consumed + chunk_size]
+		threads[thread_index] = thread.create_and_start_with_poly_data3(
 			arg1 = engine.vk_device,
 			arg2 = &engine.vk_alloc,
-			arg3 = tasks[i * chunk_size:(i + 1) * chunk_size],
+			arg3 = task_slice,
 			fn = eat_load_task,
 		)
+
+		thread_index += 1
+		num_tasks_consumed += len(task_slice)
 	}
 
 	//
 	// Eat the remainder on main thread
 	//
-	eat_load_task(engine.vk_device, &engine.vk_alloc, tasks[num_threads * chunk_size:])
-	for t in threads[0:num_threads] do thread.destroy(t)
+	eat_load_task(engine.vk_device, &engine.vk_alloc, tasks[num_tasks_consumed:])
+	for t in threads[:thread_index] do thread.destroy(t)
 
 	for task in tasks {
 		if task.output.ok {
+			log.infof("Loaded {} <-> %#v", task.input.texture_cpath, task.input.texture)
 			engine_upload_image_data(
 				engine,
 				task.input.texture.image,
@@ -1066,135 +851,6 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 		} else {
 			log.warnf("Didn't succeed in the task load for \"{}\"", task.input.texture_cpath)
 		}
-	}
-}
-
-engine_load_material_textures :: proc(engine: ^Engine, model_tag: ModelTag, mesh_index: int) {
-
-	get_texture_details :: proc(
-		m: Model,
-		mtl: model.Material,
-		material_type: MaterialType,
-	) -> (
-		texture_path: cstring,
-		desired_channels: i32,
-		texture_format: vk.Format,
-		ok: bool,
-	) {
-		texture_rel_path: string
-
-		switch material_type {
-		case .diffuse:
-			texture_rel_path = model.get_material_string(m, mtl, .map_Kd)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .emmisive:
-			texture_rel_path = model.get_material_string(m, mtl, .map_Ke)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .normal:
-			texture_rel_path = model.get_material_string(m, mtl, .map_bump)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-
-		case .specular:
-			texture_rel_path = model.get_material_string(m, mtl, .map_Ks)
-			desired_channels = 4
-			texture_format = .R8G8B8A8_SRGB
-		}
-
-
-		if len(texture_rel_path) == 0 {
-			ok = false
-			return
-		}
-
-		//
-		// Resolve the true path
-		//
-		path, alloc_err := filepath.join(
-			[]string{filepath.dir(model.get_mtl_path(m)), texture_rel_path},
-			context.temp_allocator,
-		)
-		assert(alloc_err == nil)
-
-		texture_path = strings.clone_to_cstring(path, context.temp_allocator)
-
-		ok = true
-		return
-	}
-
-	//
-	// Try to find the material type for this mesh
-	//
-	this_model := engine.models[model_tag]
-	mesh := model.get_meshes(this_model)[mesh_index]
-
-	material, found := model.find_material_by_mesh(this_model, mesh)
-	if !found {
-		log.warnf(
-			"Failed to find material for \"{}.{}\"",
-			model_tag,
-			model.get_mesh_name(this_model, mesh),
-		)
-		return
-	}
-
-	//
-	// Load all the material textures onto the gpu
-	//
-	for material_type in MaterialType {
-
-		//
-		// Get the details for the texure
-		//
-		path, desired_channels, texture_format := get_texture_details(
-			this_model,
-			material,
-			material_type,
-		) or_continue
-
-		//
-		// Load pixels into RAM
-		//
-		width, height, channels: i32
-		image_data := stb_image.load(path, &width, &height, &channels, desired_channels)
-
-		image_data_len := int(width) * int(height) * int(desired_channels)
-		assert(image_data != nil)
-
-		log.infof("Loaded {} for texture {}.{}", path, model_tag, material_type)
-		log.infof("{} || w {} || h {} || c {}", path, width, height, desired_channels)
-
-		//
-		// Create the image with its memory
-		//
-		mesh_texture := &engine.vk_mesh_images[model_tag][mesh_index][material_type]
-
-		mesh_texture^ = {
-			engine_create_image(
-				device = engine.vk_device,
-				alloc = &engine.vk_alloc,
-				width = width,
-				height = height,
-				format = texture_format,
-				usage = {.SAMPLED, .TRANSFER_DST},
-				desired_properties = {.DEVICE_LOCAL},
-			),
-		}
-
-		//
-		// Upload the data to the image
-		//
-		engine_upload_image_data(
-			engine,
-			mesh_texture.image,
-			image_data[:image_data_len],
-			width = width,
-			height = height,
-		)
 	}
 }
 
@@ -1309,6 +965,17 @@ engine_configure_descriptor_set :: proc(
 	mesh_index: int,
 	descriptor_set: vk.DescriptorSet,
 ) {
+
+	LOG :: true
+
+	when LOG do log.infof(
+		"DescriptorSet({}) {}.{}",
+		descriptor_set,
+		model_tag,
+		model.get_mesh_name(engine.models[model_tag], mesh_index),
+	)
+	when LOG do defer fmt.eprintln()
+
 	#assert(PIPELINE == .shader)
 	for binding, binding_tag in SHADER_PIPELINE_SET_LAYOUTS {
 
@@ -1342,10 +1009,14 @@ engine_configure_descriptor_set :: proc(
 
 			write_ds.pBufferInfo = &buffer_info
 
+			when LOG do fmt.eprintfln("{}", buffer_info)
+
 		case .tex_diffuse:
+			mtype := MaterialType.diffuse
+
 			image_info = vk.DescriptorImageInfo {
-				sampler     = engine.vk_image_sampler[.diffuse],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.diffuse].view,
+				sampler     = engine.vk_image_sampler[mtype],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1359,10 +1030,14 @@ engine_configure_descriptor_set :: proc(
 
 			write_ds.pImageInfo = &image_info
 
-		case .tex_emmisive:
+			when LOG do fmt.eprintfln("{}", image_info)
+
+		case .tex_emissive:
+			mtype := MaterialType.emissive
+
 			image_info = vk.DescriptorImageInfo {
-				sampler     = engine.vk_image_sampler[.emmisive],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.emmisive].view,
+				sampler     = engine.vk_image_sampler[mtype],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1375,11 +1050,15 @@ engine_configure_descriptor_set :: proc(
 			}
 
 			write_ds.pImageInfo = &image_info
+
+			when LOG do fmt.eprintfln("{}", image_info)
 
 		case .tex_normal:
+			mtype := MaterialType.normal
+
 			image_info = vk.DescriptorImageInfo {
-				sampler     = engine.vk_image_sampler[.normal],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.normal].view,
+				sampler     = engine.vk_image_sampler[mtype],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1392,11 +1071,15 @@ engine_configure_descriptor_set :: proc(
 			}
 
 			write_ds.pImageInfo = &image_info
+
+			when LOG do fmt.eprintfln("{}", image_info)
 
 		case .tex_specular:
+			mtype := MaterialType.specular
+
 			image_info = vk.DescriptorImageInfo {
-				sampler     = engine.vk_image_sampler[.specular],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][.specular].view,
+				sampler     = engine.vk_image_sampler[mtype],
+				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1409,11 +1092,14 @@ engine_configure_descriptor_set :: proc(
 			}
 
 			write_ds.pImageInfo = &image_info
+
+			when LOG do fmt.eprintfln("{}", image_info)
 		}
 
-
 		vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
+
 	}
+
 }
 
 engine_init_command_buffers :: proc(engine: ^Engine) {

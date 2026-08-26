@@ -8,6 +8,43 @@ import "core:mem"
 import "model"
 import vk "vendor:vulkan"
 
+DRAW_FILTER := #partial [ModelTag][]string {
+	.viking_room = {"room"},
+	.cacodemon   = {
+		"cacodemon_armor",
+		"cacodemon_arms",
+		"cacodemon_body",
+		"cacodemon_eye",
+		// "cacodemon_wounds",
+	},
+	.dark_lord   = {
+		"darklord_mech_arm",
+		// "darklord_mech_arm_rt_wounds",
+		"darklord_mech_cannon",
+		"darklord_mech_canopy",
+		// "darklord_mech_canopy_wounds",
+		"darklord_mech_hand",
+		// "darklord_mech_hand_rt_wounds",
+		"darklord_mech_helmet",
+		// "darklord_mech_helmet_wounds",
+		"darklord_mech_leg",
+		// "darklord_mech_leg_lf_wounds",
+		// "darklord_mech_leg_rt_wounds",
+		// "darklord_mech_shield",
+		// "darklord_mech_shield_buckler",
+		"darklord_mech_shoulder",
+		// "darklord_mech_shoulder_rt_wounds",
+		"darklord_mech_skirt",
+		// "darklord_mech_skirt_lf_wounds",
+		// "darklord_mech_skirt_rt_wounds",
+		// "darklord_mech_sword",
+		// "darklord_mech_sword_effect",
+		// "darklord_mech_sword_hilt",
+		"darklord_mech_torso",
+		// "darklord_mech_torso_wounds",
+	},
+}
+
 frame :: proc(engine: ^Engine) {
 	result: vk.Result
 
@@ -213,6 +250,15 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	for mesh, mesh_index in model.get_meshes(current_model) {
 
+		mesh_name := model.get_mesh_name(current_model, mesh)
+
+		found := false
+		for f in DRAW_FILTER[CURRENT_MODEL] do if f == mesh_name {
+			found = true
+			break
+		}
+		if !found do continue
+
 		vk.CmdBindDescriptorSets(
 			commandBuffer = commandBuffer,
 			pipelineBindPoint = .GRAPHICS,
@@ -351,25 +397,32 @@ engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 	corner := engine.models[CURRENT_MODEL].header.corner
 	dim := engine.models[CURRENT_MODEL].header.dim
 
-	model_from_vertex :=
-		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
-		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) *
-		linalg.matrix4_rotate_f32(engine.model_rotation, engine.camera.up)
-
-	return Uniforms {
-		camera_position = engine.camera.pos,
-		lightdir = linalg.normalize([3]f32{1, 1, 1}),
-		screen_from_world = linalg.matrix4_perspective_f32(
+	screen_from_world :=
+		linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
 			far = 10,
 			near = 0.1,
-		),
-		world_from_model = linalg.matrix4_look_at_f32(
+		) *
+		linalg.matrix4_look_at_f32(
 			eye = engine.camera.pos,
 			centre = engine.camera.pos + view_direction,
 			up = engine.camera.up,
-		),
+		)
+
+	world_from_model :=
+		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
+		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
+
+	model_from_vertex: matrix[4, 4]f32 = 1
+
+	return Uniforms {
+		flags = engine.shader_flags,
+		camera_position = {engine.camera.pos.x, engine.camera.pos.y, engine.camera.pos.z, 0},
+		light_dir = {0, 0, 1, 0},
+		light_color = 1,
+		screen_from_world = screen_from_world,
+		world_from_model = world_from_model,
 		model_from_vertex = model_from_vertex,
 	}
 }

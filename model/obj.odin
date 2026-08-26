@@ -2,6 +2,7 @@ package model
 
 import "core:fmt"
 import "core:log"
+import "core:math/linalg"
 import "core:os"
 import "core:path/filepath"
 import "core:simd"
@@ -123,6 +124,7 @@ obj_make_vertices :: proc(
 	if flipy do dy = -1
 
 	for face in faces do for point in face {
+
 		new_point := Vertex {
 
 			// vertex
@@ -140,10 +142,18 @@ obj_make_vertices :: proc(
 			texcoords[point[.texcoord] * 2 + 1] + dy,
 		}
 
+		//
+		// normalize the normal
+		//
+		length := linalg.length([3]f32{new_point[3], new_point[4], new_point[5]})
+		new_point[3] /= length
+		new_point[4] /= length
+		new_point[5] /= length
+
 		new_point_index, found := seen[new_point]
 		if !found {
 			new_point_index = len(vertices)
-			seen[new_point] = len(vertices)
+			seen[new_point] = new_point_index
 			append(vertices, new_point)
 		}
 

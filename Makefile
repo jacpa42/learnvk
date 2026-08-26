@@ -8,7 +8,7 @@ COMMON_FLAGS := -vet-cast -vet-semicolon -vet-shadowing -vet-style -vet-using-pa
 DEBUG_FLAGS := $(COMMON_FLAGS) -debug
 RELEASE_FLAGS := $(COMMON_FLAGS) -o:speed -lto:thin -no-bounds-check
 
-.PHONY: shad r_shad debug release t r rr model
+.PHONY: clean shad r_shad debug release t r rr model
 
 debug: r_shad
 	@echo "debug compile main"
@@ -17,6 +17,9 @@ debug: r_shad
 release: r_shad
 	@echo "release compile"
 	$(COMPILE_MAIN) $(RELEASE_FLAGS)
+
+clean:
+	fd -HIebob -xrm
 
 t:
 	odin test . -all-packages

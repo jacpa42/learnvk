@@ -1,6 +1,7 @@
 package learnvk
 
 import "core:math"
+
 Camera :: struct {
 	speed:       f32,
 	sensitivity: f32,
@@ -11,11 +12,11 @@ Camera :: struct {
 }
 
 camera_view_dir :: proc "contextless" (cam: ^Camera) -> [3]f32 {
-	sy := math.sin(cam.yaw)
-	cy := math.cos(cam.yaw)
-	sp := math.sin(cam.pitch)
-	cp := math.cos(cam.pitch)
+	sinyaw := math.sin(cam.yaw)
+	cosyaw := math.cos(cam.yaw)
+	sinpitch := math.sin(cam.pitch)
+	cospitch := math.cos(cam.pitch)
 
-	return {cy * cp, sp, sy * cp}
+	return {cosyaw * cospitch, sinyaw * cospitch, -sinpitch}
 }
 

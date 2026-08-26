@@ -98,20 +98,50 @@ mtl_load_memory :: proc(m: Mtl, data: []byte) -> (result: Result) {
 		} else if starts_with(line, "map_Ka") {
 			mat.strings[.map_Ka] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Ks") {
-			mat.strings[.map_Ks] = mtl_new_string(m, noprefix)
-
-		} else if starts_with(line, "map_Ke") {
-			mat.strings[.map_Ke] = mtl_new_string(m, noprefix)
+		} else if starts_with(line, "diffuse") {
+			mat.strings[.diffuse] = mtl_new_string(m, noprefix)
 
 		} else if starts_with(line, "map_Kd") {
 			mat.strings[.map_Kd] = mtl_new_string(m, noprefix)
 
+		} else if starts_with(line, "specular") {
+			mat.strings[.specular] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "map_Ks") {
+			mat.strings[.map_Ks] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "emissive") {
+			mat.strings[.emissive] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "map_Ke") {
+			mat.strings[.map_Ke] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "ambient") {
+			mat.strings[.ambient] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "map_Ka") {
+			mat.strings[.map_Ka] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "dissolve") {
+			mat.strings[.dissolve] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "alpha") {
+			mat.strings[.alpha] = mtl_new_string(m, noprefix)
+
 		} else if starts_with(line, "map_d") {
 			mat.strings[.map_d] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_bump") || starts_with(line, "bump") {
+		} else if starts_with(line, "normal") {
+			mat.strings[.normal] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "bump") {
+			mat.strings[.bump] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "map_bump") {
 			mat.strings[.map_bump] = mtl_new_string(m, noprefix)
+
+		} else if starts_with(line, "map_Bump") {
+			mat.strings[.map_Bump] = mtl_new_string(m, noprefix)
 		}
 
 	}
