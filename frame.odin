@@ -418,9 +418,10 @@ engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 
 	return Uniforms {
 		flags = engine.shader_flags,
-		camera_position = {engine.camera.pos.x, engine.camera.pos.y, engine.camera.pos.z, 0},
-		light_dir = {0, 0, 1, 0},
-		light_color = 1,
+		camera_position = engine.camera.pos,
+		light_dir = {0, 0, 1},
+		light_color = {0, 1, 0},
+		ambient_light = 0.1,
 		screen_from_world = screen_from_world,
 		world_from_model = world_from_model,
 		model_from_vertex = model_from_vertex,

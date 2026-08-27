@@ -98,13 +98,14 @@ UniformFlag :: enum {
 	enable_specular,
 }
 
-Uniforms :: struct #all_or_none #align (16) {
+Uniforms :: struct #all_or_none #align (align_of([4]f32)) {
 	screen_from_world: matrix[4, 4]f32,
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
-	light_dir:         [4]f32,
-	light_color:       [4]f32,
-	camera_position:   [4]f32,
+	light_dir:         [3]f32,
+	light_color:       [3]f32,
+	camera_position:   [3]f32,
+	ambient_light:     f32,
 	flags:             bit_set[UniformFlag;u32],
 }
 

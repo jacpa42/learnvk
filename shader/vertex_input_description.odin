@@ -234,24 +234,17 @@ append_vertex_input_description :: proc(
 	// Then create an enumerated array of vertex set layout descriptions
 	//
 
-
 	for vs in vertex_shader_info {
-		if !vs_has_params(vs) {
-			continue
-		}
+		if !vs_has_params(vs) do continue
 
 		shader_struct_name := make_shader_struct_variant(vs.shader_path)
 		shader_enum_name_upper := make_shader_enum_variant_upper(vs.shader_path)
 
 		append(o, "//\n//You might need to put the sampler for some of these descriptors!\n//\n")
-		append(
-			o,
-			fmt.tprintf(
-				"{}_PIPELINE_SET_LAYOUTS := [{}Binding]vk.DescriptorSetLayoutBinding {{\n",
-				shader_enum_name_upper,
-				shader_struct_name,
-			),
-		)
+		append(o, shader_enum_name_upper)
+		append(o, "_PIPELINE_SET_LAYOUTS := [")
+		append(o, shader_struct_name)
+		append(o, "Binding]vk.DescriptorSetLayoutBinding {{\n")
 
 		for param in vs.params {
 			// Add a comment about where this layout is coming from
@@ -281,10 +274,7 @@ append_vertex_input_description :: proc(
 					append(o, ", ")
 				}
 			}
-			append(o, "},\n")
-
-
-			append(o, "\t},\n")
+			append(o, "},\n\t},\n")
 		}
 
 		append(o, "}\n\n")
@@ -299,6 +289,19 @@ append_vertex_input_description :: proc(
 		pipeline_max_set_layouts = max(pipeline_max_set_layouts, len(vs.params))
 	}
 	append(o, fmt.tprintf("PIPELINE_MAX_SET_LAYOUTS :: {}\n\n", pipeline_max_set_layouts))
+
+	//
+	// Recreate the struct definitions in odin
+	//
+	for vs in vertex_shader_info {
+		if !vs_has_params(vs) do continue
+
+		shader_struct_prefix := make_shader_struct_variant(vs.shader_path)
+
+		for param in vs.params {
+			copy_shader_param_def_in_odin(o, shader_struct_prefix, param)
+		}
+	}
 }
 
 shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.ShaderStageFlags {
@@ -454,6 +457,32 @@ field_to_odin_name_and_type :: proc(field: SlangType) -> (type: string) {
 	}
 
 	return
+}
+
+copy_shader_param_def_in_odin :: proc(
+	o: ^[dynamic]byte,
+	shader_struct_prefix: string,
+	param: ShaderParameter,
+) {
+	inner_type: SlangType
+	switch param.type.kind {
+	case .constantBuffer:
+		inner_type = slang_type_parse(param.type.elementType)
+
+	case .resource:
+		return // dont care
+
+	}
+	append(o, shader_struct_prefix)
+	append(o, param.name)
+	append(o, " :: struct {\n")
+
+	//
+	// TODO: Parse out this struct and actually write it here please
+	//
+	fmt.eprintfln("{} %#v", shader_struct_prefix, inner_type)
+
+	defer append(o, "}\n")
 }
 
 

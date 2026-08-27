@@ -66,9 +66,14 @@ StageParameter :: struct {
 }
 
 SlangField :: struct {
-	name:  string,
-	stage: Stage,
-	type:  SlangType,
+	name:    string,
+	stage:   Stage,
+	type:    SlangType,
+	binding: struct {
+		offset:        i64,
+		size:          i64,
+		elementStride: i64,
+	},
 }
 
 SlangType :: union {
@@ -79,7 +84,6 @@ SlangType :: union {
 }
 
 SlangStruct :: struct {
-	// kind == struct
 	name:   string,
 	fields: []SlangField,
 	sizes:  []SlangSize,
@@ -136,8 +140,31 @@ Stage :: enum {
 }
 
 slang_field_parse :: proc(v: json.Object) -> (o: SlangField) {
+	//
+	// name
+	//
 	o.name = v["name"].(json.String)
+
+	//
+	// type
+	//
 	o.type = slang_type_parse(JsonObject(v["type"].(json.Object)))
+
+	//
+	// binding
+	//
+	binding := JsonObject(v["binding"].(json.Object))
+	found: bool
+
+	o.binding.offset, found = binding["offset"].(json.Integer)
+	if !found do o.binding.offset = -1
+
+	o.binding.size, found = binding["size"].(json.Integer)
+	if !found do o.binding.size = -1
+
+	o.binding.elementStride, found = binding["elementStride"].(json.Integer)
+	if !found do o.binding.elementStride = -1
+
 	return
 }
 

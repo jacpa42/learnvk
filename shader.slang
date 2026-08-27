@@ -1,8 +1,3 @@
-#define ENABLE_DIFFUSE
-// #define ENABLE_EMISSIVE
-// #define ENABLE_HEIGHT
-// #define ENABLE_SPECULAR
-
 struct Vertex {
     float3 pos;
     float3 normal;
@@ -16,18 +11,19 @@ struct VertexOutput {
     float2 texcoord;
 };
 
-struct UniformBuffer {
+struct Uniforms {
     float4x4 screen_from_world;
     float4x4 world_from_model;
     float4x4 model_from_vertex;
-    float4   light_dir;
-    float4   light_color;
-    float4   camera_position;
+    float3   light_dir;
+    float3   light_color;
+    float3   camera_position;
+    float    ambient_light;
     uint     flags;
 };
 
 // The buffers which contain our model/texture data
-ConstantBuffer<UniformBuffer> uniforms;
+ConstantBuffer<Uniforms> uniforms;
 
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;

@@ -15,7 +15,6 @@ make_shader_enum_variant_upper :: proc(path: string) -> string {
 	return outp
 }
 
-
 make_shader_struct_variant :: proc(path: string) -> string {
 	outp, err := strings.to_pascal_case(filepath.short_stem(path), context.temp_allocator)
 	assert(err == .None)
