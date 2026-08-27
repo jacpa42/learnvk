@@ -1,5 +1,12 @@
 package learnvk
 
+//
+// The handling of uniforms is a bit shitty, need to write out the uniforms
+// struct in odin with padding so it works out nicely.
+//
+// TODO: Look into push constant in slang and vulkan
+//
+
 import "base:runtime"
 import "core:c"
 import "core:debug/trace"
