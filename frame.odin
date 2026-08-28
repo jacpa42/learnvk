@@ -367,20 +367,21 @@ engine_handle_input :: proc(engine: ^Engine) {
 
 	for action in engine.actions do switch action {
 
-	case .forward:  cam.pos += forward
-	case .backward: cam.pos -= forward
+	case .forward:  cam.pos.xyz += forward
+	case .backward: cam.pos.xyz -= forward
 
-    case .right: cam.pos += right
-	case .left:  cam.pos -= right
+    case .right: cam.pos.xyz += right
+	case .left:  cam.pos.xyz -= right
 
-	case .down: cam.pos += up
-	case .up:   cam.pos -= up
+	case .down: cam.pos.xyz += up
+	case .up:   cam.pos.xyz -= up
 
 	}
 }
 // odinfmt: enable
 
-engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
+#assert(PIPELINE == .shader)
+engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 	//
 	// Engine setup uniforms
 	//
@@ -405,8 +406,8 @@ engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 			near = 0.1,
 		) *
 		linalg.matrix4_look_at_f32(
-			eye = engine.camera.pos,
-			centre = engine.camera.pos + view_direction,
+			eye = engine.camera.pos.xyz,
+			centre = engine.camera.pos.xyz + view_direction,
 			up = engine.camera.up,
 		)
 
@@ -416,15 +417,20 @@ engine_make_uniforms :: proc(engine: ^Engine) -> Uniforms {
 
 	model_from_vertex: matrix[4, 4]f32 = 1
 
-	return Uniforms {
-		flags = engine.shader_flags,
-		camera_position = engine.camera.pos,
-		light_dir = {0, 0, 1},
-		light_color = {0, 1, 0},
-		ambient_light = 0.1,
+	return ShaderUniforms {
 		screen_from_world = screen_from_world,
-		world_from_model = world_from_model,
+		world_from_model  = world_from_model,
 		model_from_vertex = model_from_vertex,
+
+		//
+		camera_position   = engine.camera.pos,
+		light_dir         = {0, 0, 1, 0},
+		light_color       = {0, 1, 0, 1},
+		flags             = engine.shader_flags,
+		// _p0               = 0,
+		// _p1               = 0,
+		// _p2               = 0,
 	}
+
 }
 

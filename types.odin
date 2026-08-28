@@ -8,8 +8,16 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.cacodemon
-LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
+CURRENT_MODEL := ModelTag.viking_room
+LOAD_MODELS := bit_set[ModelTag] {
+	CURRENT_MODEL,
+	// .bunny,
+	// .dragon,
+	// .viking_room,
+	// .dark_lord,
+	// .cacodemon,
+	// .sponza,
+}
 PIPELINE :: Pipeline.shader
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
@@ -66,7 +74,7 @@ Image :: struct {
 MaterialType :: enum {
 	diffuse,
 	emissive,
-	normal,
+	bump,
 	specular,
 }
 
@@ -94,18 +102,19 @@ ImageViewTag :: enum {
 UniformFlag :: enum {
 	enable_diffuse,
 	enable_emissive,
-	enable_height,
+	enable_bump,
 	enable_specular,
 }
 
-Uniforms :: struct #all_or_none #align (align_of([4]f32)) {
+ShaderUniforms :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
-	light_dir:         [3]f32,
-	light_color:       [3]f32,
-	camera_position:   [3]f32,
-	ambient_light:     f32,
+
+	//
+	light_dir:         [4]f32,
+	light_color:       [4]f32,
+	camera_position:   [4]f32,
 	flags:             bit_set[UniformFlag;u32],
 }
 

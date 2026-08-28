@@ -16,7 +16,7 @@ bob_dump_info :: proc(bob: ^Bob) {
 	info("{} strings  : len={} size={}\n", rawptr(bob), slice_len(bob.header.strings),  bob.header.strings.size)
 	info("{} mtllist  : len={} size={}\n", rawptr(bob), slice_len(bob.header.mtllist),  bob.header.mtllist.size)
 	info("{} vertices : len={} size={}\n", rawptr(bob), slice_len(bob.header.vertices), bob.header.vertices.size)
-	info("{} indices : len={} size={}\n", rawptr(bob), slice_len(bob.header.indices), bob.header.indices.size)
+	info("{} indices  : len={} size={}\n", rawptr(bob), slice_len(bob.header.indices), bob.header.indices.size)
 
 	for mesh, i in get_meshes(bob^) {
 		name := get_slice_string(mesh.name, bob.data)
@@ -87,7 +87,6 @@ bob_load :: proc(bob: ^Bob, path: string) -> (result: Result) {
 		runtime.Allocator_Error,
 	) {
 		new_alignment := max(alignment, BOB_ALIGN)
-		log.warnf("overriding alignment {}, using {}", alignment, new_alignment)
 
 		default_allocator := (^runtime.Allocator)(userdata)
 

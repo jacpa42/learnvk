@@ -86,7 +86,7 @@ SlangType :: union {
 SlangStruct :: struct {
 	name:   string,
 	fields: []SlangField,
-	sizes:  []SlangSize,
+	sizes:  [dynamic; 1]SlangSize,
 }
 
 SlangSize :: struct {
@@ -207,14 +207,22 @@ slang_type_parse_struct :: proc(
 	// sizes
 	//
 	sizes := v["sizes"].(json.Array)
-	o.sizes = make([]SlangSize, len(sizes), allocator)
-	for &size, i in o.sizes {
-		sizes_i := sizes[i].(json.Object)
+	assert(len(sizes) <= cap(o.sizes))
+	for size_value in sizes {
+		size_object := size_value.(json.Object)
 
-		ok: bool
-		size.kind, ok = sizes_i["kind"].(json.String)
-		size.value, ok = sizes_i["value"].(json.Integer)
-		size.alignment, ok = sizes_i["aligment"].(json.Integer)
+		found: bool
+		size: SlangSize
+
+		size.kind = size_object["kind"].(json.String)
+
+		size.value, found = size_object["value"].(json.Integer)
+		if !found do size.value = -1
+
+		size.alignment, found = size_object["alignment"].(json.Integer)
+		if !found do size.alignment = -1
+
+		append(&o.sizes, size)
 	}
 
 	//

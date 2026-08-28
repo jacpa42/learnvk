@@ -477,10 +477,10 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
     }
 
     if key == glfw.KEY_H && ctrl && pressed {
-        if .enable_height in engine.shader_flags {
-            engine.shader_flags -= {.enable_height}
+        if .enable_bump in engine.shader_flags {
+            engine.shader_flags -= {.enable_bump}
         } else {
-            engine.shader_flags += {.enable_height}
+            engine.shader_flags += {.enable_bump}
         }
     }
 
@@ -585,8 +585,8 @@ get_texture_details :: proc(
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 
-	case .normal:
-		texture_rel_path = model.get_material_string(m, mtl, .normal)
+	case .bump:
+		texture_rel_path = model.get_material_string(m, mtl, .bump)
 		desired_channels = 4
 		texture_format = .R8G8B8A8_SRGB
 

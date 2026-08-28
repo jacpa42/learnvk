@@ -7,7 +7,7 @@ Camera :: struct {
 	sensitivity: f32,
 	pitch:       f32,
 	yaw:         f32,
-	pos:         [3]f32,
+	pos:         [4]f32,
 	up:          [3]f32,
 }
 

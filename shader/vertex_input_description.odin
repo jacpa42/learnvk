@@ -67,7 +67,7 @@ append_vertex_input_description :: proc(
 				append(o, " :: struct {\n")
 
 				for field in t.fields {
-					odin_type := field_to_odin_name_and_type(field.type)
+					odin_type := field_to_odin_type(field.type)
 					assert(raw_data(odin_type) != nil)
 
 					append(o, '\t')
@@ -244,7 +244,7 @@ append_vertex_input_description :: proc(
 		append(o, shader_enum_name_upper)
 		append(o, "_PIPELINE_SET_LAYOUTS := [")
 		append(o, shader_struct_name)
-		append(o, "Binding]vk.DescriptorSetLayoutBinding {{\n")
+		append(o, "Binding]vk.DescriptorSetLayoutBinding {\n")
 
 		for param in vs.params {
 			// Add a comment about where this layout is coming from
@@ -419,7 +419,7 @@ vs_has_params :: proc(vs: VertexShaderInfo) -> (has_params: bool) {
 	return
 }
 
-field_to_odin_name_and_type :: proc(field: SlangType) -> (type: string) {
+field_to_odin_type :: proc(field: SlangType) -> (type: string) {
 	switch f in field {
 
 	case SlangStruct:
@@ -464,25 +464,90 @@ copy_shader_param_def_in_odin :: proc(
 	shader_struct_prefix: string,
 	param: ShaderParameter,
 ) {
-	inner_type: SlangType
+	param_elem_type: SlangStruct
 	switch param.type.kind {
 	case .constantBuffer:
-		inner_type = slang_type_parse(param.type.elementType)
+		param_elem_type = slang_type_parse_struct(param.type.elementType)
 
 	case .resource:
 		return // dont care
 
 	}
-	append(o, shader_struct_prefix)
-	append(o, param.name)
-	append(o, " :: struct {\n")
+
+	// This contains a list of #asserts we want to make sure that our data
+	// is aligned in the same way that the shader expects.
+	end_of_def_checks := make([dynamic]u8, 0, 256)
+	defer delete(end_of_def_checks)
+	defer append(o, '\n')
+	defer append(o, ..end_of_def_checks[:])
+
+	struct_name, err := strings.concatenate([]string{shader_struct_prefix, param_elem_type.name})
+	assert(err == nil)
+	defer delete(struct_name)
+
+	append(&end_of_def_checks, "#assert(size_of(")
+	append(&end_of_def_checks, struct_name)
+	append(&end_of_def_checks, ") == ")
+	append(&end_of_def_checks, fmt.tprint(param_elem_type.sizes[0].value))
+	append(&end_of_def_checks, ")\n")
+
+	assert(param_elem_type.sizes[0].alignment > 0)
+
+	COMMENT_OUT_STRUCT_DEF :: true
+
+	when COMMENT_OUT_STRUCT_DEF {
+		append(
+			o,
+			"//\n// Below is a reference for what the shader struct should look like.\n// Compile time asserts have been inserted to ensure that your struct definition is correct.\n//\n",
+		)
+	}
 
 	//
-	// TODO: Parse out this struct and actually write it here please
+	// Actual struct definition
 	//
-	fmt.eprintfln("{} %#v", shader_struct_prefix, inner_type)
+	when COMMENT_OUT_STRUCT_DEF do append(o, "// ")
+	append(o, struct_name)
+	// append(o, " :: struct #all_or_none #align(")
+	// append(o, fmt.tprint(param_elem_type.sizes[0].alignment))
+	// append(o, ") {\n")
+	append(o, " :: struct #all_or_none {\n")
 
-	defer append(o, "}\n")
+	defer {
+		when COMMENT_OUT_STRUCT_DEF do append(o, "// ")
+		append(o, "}\n\n")
+	}
+
+	for field in param_elem_type.fields {
+		odin_type := field_to_odin_type(field.type)
+
+		when COMMENT_OUT_STRUCT_DEF do append(o, "// ")
+		append(o, "\t")
+		append(o, field.name)
+		append(o, ": ")
+		append(o, odin_type)
+		append(o, ",\n")
+
+		//
+		// Add an assert that the offset of this struct field is as we expect
+		//
+		append(&end_of_def_checks, "#assert(size_of(type_of(")
+		append(&end_of_def_checks, struct_name)
+		append(&end_of_def_checks, "{}.")
+		append(&end_of_def_checks, field.name)
+		append(&end_of_def_checks, ")) == ")
+		append(&end_of_def_checks, fmt.tprint(field.binding.size))
+		append(&end_of_def_checks, ")\n")
+
+		append(&end_of_def_checks, "#assert(offset_of_by_string(")
+		append(&end_of_def_checks, struct_name)
+		append(&end_of_def_checks, ", \"")
+		append(&end_of_def_checks, field.name)
+		append(&end_of_def_checks, "\") == ")
+		append(&end_of_def_checks, fmt.tprint(field.binding.offset))
+		append(&end_of_def_checks, ")\n\n")
+
+	}
+
 }
 
 

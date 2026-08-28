@@ -11,14 +11,21 @@ struct VertexOutput {
     float2 texcoord;
 };
 
+enum Flags : uint {
+	enable_diffuse  = 1,
+	enable_emissive = 2,
+	enable_bump     = 4,
+	enable_specular = 8,
+}
+
 struct Uniforms {
     float4x4 screen_from_world;
     float4x4 world_from_model;
     float4x4 model_from_vertex;
-    float3   light_dir;
-    float3   light_color;
-    float3   camera_position;
-    float    ambient_light;
+
+    float4   light_dir;
+    float4   light_color;
+    float4   camera_position;
     uint     flags;
 };
 
@@ -28,7 +35,7 @@ ConstantBuffer<Uniforms> uniforms;
 // All the material textures we can bind for our fragment shader
 Sampler2D tex_diffuse;
 Sampler2D tex_emissive;
-Sampler2D tex_normal;
+Sampler2D tex_bump;
 Sampler2D tex_specular;
 
 [shader("vertex")]
@@ -64,7 +71,7 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     //
     // diffuse
     //
-    if ((uniforms.flags & 1) > 0) {
+    if (uniforms.flags & 1) {
         col *= tex_diffuse.Sample(coords);
     }
 

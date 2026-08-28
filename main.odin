@@ -1,12 +1,5 @@
 package learnvk
 
-//
-// The handling of uniforms is a bit shitty, need to write out the uniforms
-// struct in odin with padding so it works out nicely.
-//
-// TODO: Look into push constant in slang and vulkan
-//
-
 import "base:runtime"
 import "core:c"
 import "core:debug/trace"
@@ -85,12 +78,13 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Setup the default state to generate the uniforms
 	//
+	engine.shader_flags = {.enable_diffuse}
 	engine.camera = {
 		speed       = 0.01,
 		sensitivity = 0.0005,
 		pitch       = 0,
 		yaw         = 0,
-		pos         = {0, 0, 0},
+		pos         = {0, 0, 0, 0},
 		up          = {0, 0, -1},
 	}
 
@@ -469,6 +463,46 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	engine_init_buffer_and_images(engine)
 
+
+	//
+	// Load all the textures we could possibly need
+	//
+	engine_load_all_textures(engine)
+
+	//
+	// Create the samplers
+	//
+	for tag in MaterialType {
+
+		sampler_create_info := vk.SamplerCreateInfo {
+			sType                   = .SAMPLER_CREATE_INFO,
+			flags                   = {},
+			magFilter               = .LINEAR,
+			minFilter               = .LINEAR,
+			mipmapMode              = .LINEAR, // SamplerMipmapMode,
+			addressModeU            = .REPEAT, // SamplerAddressMode,
+			addressModeV            = .REPEAT, // SamplerAddressMode,
+			addressModeW            = .REPEAT, // SamplerAddressMode,
+			mipLodBias              = 0, // f32,
+			anisotropyEnable        = true, // b32,
+			maxAnisotropy           = physical_device_properties.limits.maxSamplerAnisotropy, // f32,
+			compareEnable           = false, // b32,
+			compareOp               = .ALWAYS, // CompareOp,
+			minLod                  = 0, // f32,
+			maxLod                  = 0, // f32,
+			borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
+			unnormalizedCoordinates = false, // b32,
+		}
+
+		result = vk.CreateSampler(
+			engine.vk_device,
+			&sampler_create_info,
+			&engine.vk_alloc,
+			&engine.vk_image_sampler[tag],
+		)
+		ensure(result == .SUCCESS)
+	}
+
 	//
 	// Create the descriptor sets/set_layouts for all the models and the uniform
 	// buffer.
@@ -600,7 +634,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	// Create the uniform buffers
 	//
 	for i in 0 ..< len(engine.vk_uniform_buffers) {
-		size := vk.DeviceSize(size_of(Uniforms))
+		size := vk.DeviceSize(size_of(ShaderUniforms))
 		usage := vk.BufferUsageFlags{.UNIFORM_BUFFER}
 		desired_properties := vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}
 
@@ -618,7 +652,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			engine.vk_device,
 			engine.vk_uniform_buffers_memory[i],
 			offset = 0,
-			size = size_of(Uniforms),
+			size = size_of(ShaderUniforms),
 			flags = {},
 			ppData = &engine.vk_uniform_buffers_mmapped[i],
 		)
@@ -727,45 +761,6 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			)
 		}
 	}
-
-	//
-	// Load all the textures we could possibly need
-	//
-	engine_load_all_textures(engine)
-
-	//
-	// Create the samplers
-	//
-	for tag in MaterialType {
-
-		sampler_create_info := vk.SamplerCreateInfo {
-				sType                   = .SAMPLER_CREATE_INFO,
-				flags                   = {},
-				magFilter               = .LINEAR,
-				minFilter               = .LINEAR,
-				mipmapMode              = .LINEAR, // SamplerMipmapMode,
-				addressModeU            = .REPEAT, // SamplerAddressMode,
-				addressModeV            = .REPEAT, // SamplerAddressMode,
-				addressModeW            = .REPEAT, // SamplerAddressMode,
-				mipLodBias              = 0, // f32,
-				anisotropyEnable        = true, // b32,
-				maxAnisotropy           = physical_device_properties.limits.maxSamplerAnisotropy, // f32,
-				compareEnable           = false, // b32,
-				compareOp               = .ALWAYS, // CompareOp,
-				minLod                  = 0, // f32,
-				maxLod                  = 0, // f32,
-				borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
-				unnormalizedCoordinates = false, // b32,
-			}
-
-		result = vk.CreateSampler(
-			engine.vk_device,
-			&sampler_create_info,
-			&engine.vk_alloc,
-			&engine.vk_image_sampler[tag],
-		)
-		ensure(result == .SUCCESS)
-	}
 }
 
 engine_load_all_textures :: proc(engine: ^Engine) {
@@ -785,13 +780,23 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 			),
 		}
 
+		width := u32(1)
+		height := u32(1)
 		pixel_data := []u8{0x00, 0xff, 0x00, 0x00}
 		engine_upload_image_data(
 			engine,
 			engine.fallback_texture.image,
 			pixel_data,
-			width = 1,
-			height = 1,
+			width = width,
+			height = height,
+		)
+
+		log.infof(
+			"fallback_texture <-> wxh({}x{}) pixels({}) %#v",
+			width,
+			height,
+			pixel_data,
+			engine.fallback_texture,
 		)
 	}
 
@@ -847,7 +852,6 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 
 	for task in tasks {
 		if task.output.ok {
-			log.infof("Loaded {} <-> %#v", task.input.texture_cpath, task.input.texture)
 			engine_upload_image_data(
 				engine,
 				task.input.texture.image,
@@ -972,8 +976,7 @@ engine_configure_descriptor_set :: proc(
 	mesh_index: int,
 	descriptor_set: vk.DescriptorSet,
 ) {
-
-	LOG :: true
+	LOG :: false
 
 	when LOG do log.infof(
 		"DescriptorSet({}) {}.{}",
@@ -1033,11 +1036,12 @@ engine_configure_descriptor_set :: proc(
 			//
 			if image_info.imageView == 0 {
 				image_info.imageView = engine.fallback_texture.view
+				when LOG do log.warnf("{} <-> fallback", mtype)
+			} else {
+				when LOG do log.infof("{} <-> {:X}", mtype, image_info.imageView)
 			}
 
 			write_ds.pImageInfo = &image_info
-
-			when LOG do fmt.eprintfln("{}", image_info)
 
 		case .tex_emissive:
 			mtype := MaterialType.emissive
@@ -1054,14 +1058,15 @@ engine_configure_descriptor_set :: proc(
 			//
 			if image_info.imageView == 0 {
 				image_info.imageView = engine.fallback_texture.view
+				when LOG do log.warnf("{} <-> fallback", mtype)
+			} else {
+				when LOG do log.infof("{} <-> {:X}", mtype, image_info.imageView)
 			}
 
 			write_ds.pImageInfo = &image_info
 
-			when LOG do fmt.eprintfln("{}", image_info)
-
-		case .tex_normal:
-			mtype := MaterialType.normal
+		case .tex_bump:
+			mtype := MaterialType.bump
 
 			image_info = vk.DescriptorImageInfo {
 				sampler     = engine.vk_image_sampler[mtype],
@@ -1075,11 +1080,12 @@ engine_configure_descriptor_set :: proc(
 			//
 			if image_info.imageView == 0 {
 				image_info.imageView = engine.fallback_texture.view
+				when LOG do log.warnf("{} <-> fallback", mtype)
+			} else {
+				when LOG do log.infof("{} <-> {:X}", mtype, image_info.imageView)
 			}
 
 			write_ds.pImageInfo = &image_info
-
-			when LOG do fmt.eprintfln("{}", image_info)
 
 		case .tex_specular:
 			mtype := MaterialType.specular
@@ -1096,11 +1102,12 @@ engine_configure_descriptor_set :: proc(
 			//
 			if image_info.imageView == 0 {
 				image_info.imageView = engine.fallback_texture.view
+				when LOG do log.warnf("{} <-> fallback", mtype)
+			} else {
+				when LOG do log.infof("{} <-> {:X}", mtype, image_info.imageView)
 			}
 
 			write_ds.pImageInfo = &image_info
-
-			when LOG do fmt.eprintfln("{}", image_info)
 		}
 
 		vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
