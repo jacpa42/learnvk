@@ -1,49 +1,13 @@
 package learnvk
 
 import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
 import "core:mem"
 import "model"
 import vk "vendor:vulkan"
-
-DRAW_FILTER := #partial [ModelTag][]string {
-	.viking_room = {"room"},
-	.cacodemon   = {
-		"cacodemon_armor",
-		"cacodemon_arms",
-		"cacodemon_body",
-		"cacodemon_eye",
-		// "cacodemon_wounds",
-	},
-	.dark_lord   = {
-		"darklord_mech_arm",
-		// "darklord_mech_arm_rt_wounds",
-		"darklord_mech_cannon",
-		"darklord_mech_canopy",
-		// "darklord_mech_canopy_wounds",
-		"darklord_mech_hand",
-		// "darklord_mech_hand_rt_wounds",
-		"darklord_mech_helmet",
-		// "darklord_mech_helmet_wounds",
-		"darklord_mech_leg",
-		// "darklord_mech_leg_lf_wounds",
-		// "darklord_mech_leg_rt_wounds",
-		// "darklord_mech_shield",
-		// "darklord_mech_shield_buckler",
-		"darklord_mech_shoulder",
-		// "darklord_mech_shoulder_rt_wounds",
-		"darklord_mech_skirt",
-		// "darklord_mech_skirt_lf_wounds",
-		// "darklord_mech_skirt_rt_wounds",
-		// "darklord_mech_sword",
-		// "darklord_mech_sword_effect",
-		// "darklord_mech_sword_hilt",
-		"darklord_mech_torso",
-		// "darklord_mech_torso_wounds",
-	},
-}
 
 frame :: proc(engine: ^Engine) {
 	result: vk.Result
@@ -232,8 +196,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Bind vertex buffers
 	//
-	assert(CURRENT_MODEL in engine.model_loaded)
-	current_model := engine.models[CURRENT_MODEL]
+	assert(CURRENT_MODEL in engine.model_data_on_gpu)
 
 	// TODO: we can have 1 buffer per model and then just use offsets into into.
 	pOffsets: vk.DeviceSize = 0
@@ -248,16 +211,19 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Draw all our meshes
 	//
-	for mesh, mesh_index in model.get_meshes(current_model) {
-
-		mesh_name := model.get_mesh_name(current_model, mesh)
-
+	for &mesh, mesh_index in engine.model_mesh_info[CURRENT_MODEL] {
 		found := false
-		for f in DRAW_FILTER[CURRENT_MODEL] do if f == mesh_name {
-			found = true
-			break
+		for f in DRAW_FILTER[CURRENT_MODEL] {
+			if f == string(mesh.name[:]) {
+				found = true
+				break
+			}
 		}
-		if !found do continue
+
+		if !found {
+			log.warnf("Skipping {}.{}", CURRENT_MODEL, string(mesh.name[:]))
+			continue
+		}
 
 		vk.CmdBindDescriptorSets(
 			commandBuffer = commandBuffer,
@@ -395,15 +361,12 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 
 	view_direction := camera_view_dir(&engine.camera)
 
-	corner := engine.models[CURRENT_MODEL].header.corner
-	dim := engine.models[CURRENT_MODEL].header.dim
-
 	screen_from_world :=
 		linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
 			far = 10,
-			near = 0.1,
+			near = 0.01,
 		) *
 		linalg.matrix4_look_at_f32(
 			eye = engine.camera.pos.xyz,
@@ -411,11 +374,13 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 			up = engine.camera.up,
 		)
 
+	corner := engine.models[CURRENT_MODEL].header.corner
+	dim := engine.models[CURRENT_MODEL].header.dim
 	world_from_model :=
 		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
 
-	model_from_vertex: matrix[4, 4]f32 = 1
+	model_from_vertex: matrix[4, 4]f32 = linalg.matrix4_from_euler_angle_x(engine.model_rotation)
 
 	return ShaderUniforms {
 		screen_from_world = screen_from_world,
@@ -425,11 +390,9 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 		//
 		camera_position   = engine.camera.pos,
 		light_dir         = {0, 0, 1, 0},
-		light_color       = {0, 1, 0, 1},
+		light_color       = [4]f32{0x55, 0x66, 0x77, 0xff} / 0xff,
+		ambient_light     = 0.1,
 		flags             = engine.shader_flags,
-		// _p0               = 0,
-		// _p1               = 0,
-		// _p2               = 0,
 	}
 
 }

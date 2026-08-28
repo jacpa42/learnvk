@@ -26,6 +26,7 @@ struct Uniforms {
     float4   light_dir;
     float4   light_color;
     float4   camera_position;
+    float    ambient_light;
     uint     flags;
 };
 
@@ -60,7 +61,6 @@ VertexOutput vertex(
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    float2 coords = float2(input.texcoord.x, input.texcoord.y);
     float4 col = float4(
         uniforms.light_color.xyz * float3(max(
             dot(uniforms.light_dir.xyz, input.normal), 0.1
@@ -72,7 +72,7 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     // diffuse
     //
     if (uniforms.flags & 1) {
-        col *= tex_diffuse.Sample(coords);
+        col *= tex_diffuse.Sample(input.texcoord);
     }
 
     return col;

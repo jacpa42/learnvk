@@ -121,8 +121,14 @@ bob_load :: proc(bob: ^Bob, path: string) -> (result: Result) {
 //
 // Gets the slice data from the source buffer
 //
-get_slice_data :: proc "contextless" (slc: Slice($T), source: []$E) -> (data: []T) {
-	assert_contextless(int(slc.start + slc.size) <= slice.size(source))
+get_slice_data :: proc "contextless" (
+	slc: Slice($T),
+	source: []$E,
+	loc := #caller_location,
+) -> (
+	data: []T,
+) {
+	assert_contextless(int(slc.start + slc.size) <= slice.size(source), loc = loc)
 
 	bytes := slice.to_bytes(source)
 	len := slice_len(slc)
@@ -131,8 +137,14 @@ get_slice_data :: proc "contextless" (slc: Slice($T), source: []$E) -> (data: []
 	return
 }
 
-get_slice_string :: proc "contextless" (slc: Slice(byte), source: []byte) -> (data: string) {
-	assert_contextless(int(slc.start + slc.size) <= slice.size(source))
+get_slice_string :: proc "contextless" (
+	slc: Slice(byte),
+	source: []byte,
+	loc := #caller_location,
+) -> (
+	data: string,
+) {
+	assert_contextless(int(slc.start + slc.size) <= slice.size(source), loc = loc)
 
 	data = string(source[slc.start:slc.start + slc.size])
 	return

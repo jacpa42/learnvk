@@ -431,10 +431,10 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
 
 	if key == glfw.KEY_R && pressed do engine.disable_rotate = !engine.disable_rotate
 
-	if key == glfw.KEY_Q && pressed && card(engine.model_loaded) > 0 {
-        CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
-        for (CURRENT_MODEL not_in engine.model_loaded) {
-            CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1)%NUM_MODELS)
+	if key == glfw.KEY_Q && pressed && card(engine.model_data_on_gpu) > 0 {
+        CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1) % NUM_MODELS)
+        for (CURRENT_MODEL not_in engine.model_data_on_gpu) {
+            CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1) % NUM_MODELS)
         }
     }
 

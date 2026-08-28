@@ -1,5 +1,6 @@
 package model
 
+import "core:fmt"
 get_mtl_path :: proc {
 	bob_get_mtl_path,
 	obj_get_mtl_path,

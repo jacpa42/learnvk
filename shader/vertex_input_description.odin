@@ -538,6 +538,9 @@ copy_shader_param_def_in_odin :: proc(
 		append(&end_of_def_checks, fmt.tprint(field.binding.size))
 		append(&end_of_def_checks, ")\n")
 
+		//
+		// Assert that the offset is what we expect
+		//
 		append(&end_of_def_checks, "#assert(offset_of_by_string(")
 		append(&end_of_def_checks, struct_name)
 		append(&end_of_def_checks, ", \"")
@@ -545,6 +548,17 @@ copy_shader_param_def_in_odin :: proc(
 		append(&end_of_def_checks, "\") == ")
 		append(&end_of_def_checks, fmt.tprint(field.binding.offset))
 		append(&end_of_def_checks, ")\n\n")
+
+		// //
+		// // Assert that the type is what we expect
+		// //
+		// append(&end_of_def_checks, "#assert(type_of(")
+		// append(&end_of_def_checks, struct_name)
+		// append(&end_of_def_checks, "{}.")
+		// append(&end_of_def_checks, field.name)
+		// append(&end_of_def_checks, ") == ")
+		// append(&end_of_def_checks, odin_type)
+		// append(&end_of_def_checks, ")\n")
 
 	}
 

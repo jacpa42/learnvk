@@ -119,10 +119,6 @@ obj_make_vertices :: proc(
 	clear(indices)
 	non_zero_reserve(indices, max_num_unique_points)
 
-	dx, dy: f32 = 0, 0
-	if flipx do dx = -1
-	if flipy do dy = -1
-
 	for face in faces do for point in face {
 
 		new_point := Vertex {
@@ -138,9 +134,12 @@ obj_make_vertices :: proc(
 			normals[point[.normal] * 3 + 2],
 
 			// texcoord
-			texcoords[point[.texcoord] * 2 + 0] + dx,
-			texcoords[point[.texcoord] * 2 + 1] + dy,
+			texcoords[point[.texcoord] * 2 + 0],
+			texcoords[point[.texcoord] * 2 + 1],
 		}
+
+		if flipx do new_point[6] = 1 - new_point[6]
+		if flipy do new_point[7] = 1 - new_point[7]
 
 		//
 		// normalize the normal

@@ -78,7 +78,6 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Setup the default state to generate the uniforms
 	//
-	engine.shader_flags = {.enable_diffuse}
 	engine.camera = {
 		speed       = 0.01,
 		sensitivity = 0.0005,
@@ -117,6 +116,22 @@ engine_init :: proc(engine: ^Engine) {
 
 		if res == .Ok {
 			engine.model_loaded |= {tag}
+
+			meshes := model.get_meshes(engine.models[tag])
+			engine.model_mesh_info[tag] = make(type_of(engine.model_mesh_info[tag]), len(meshes))
+
+			for i in 0 ..< len(meshes) {
+				info := &engine.model_mesh_info[tag][i]
+				mesh := meshes[i]
+
+				name := transmute([]byte)(model.get_mesh_name(engine.models[tag], mesh))
+				name_len := min(len(name), cap(info.name))
+				for char in name[:name_len] do append(&info.name, char)
+
+				info.index_start = mesh.index_start
+				info.index_count = mesh.index_count
+			}
+
 		} else {
 			log.errorf("Failed to load \"{}\": {}", model_path, res)
 		}
@@ -470,6 +485,15 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	engine_load_all_textures(engine)
 
 	//
+	// We have uploaded all our model data and texture data, free everything
+	//
+	for tag in engine.model_loaded {
+		engine.model_loaded -= {tag}
+		engine.model_data_on_gpu += {tag}
+		model.destroy(&engine.models[tag])
+	}
+
+	//
 	// Create the samplers
 	//
 	for tag in MaterialType {
@@ -782,7 +806,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 
 		width := u32(1)
 		height := u32(1)
-		pixel_data := []u8{0x00, 0xff, 0x00, 0x00}
+		pixel_data := []u8{0xff, 0xff, 0xff, 0xff}
 		engine_upload_image_data(
 			engine,
 			engine.fallback_texture.image,
@@ -871,10 +895,10 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	//
 	// Specify and create the descriptor pool for all buffers
 	//
-	assert(card(engine.model_loaded) > 0)
+	assert(card(engine.model_data_on_gpu) > 0)
 	total_meshes: u32
-	for tag in engine.model_loaded {
-		total_meshes += u32(len(model.get_meshes(engine.models[tag])))
+	for tag in engine.model_data_on_gpu {
+		total_meshes += u32(len(engine.model_mesh_info[tag]))
 	}
 
 	maxSets: u32
@@ -933,8 +957,9 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	// Temporarily dupe the layouts
 	//
 
-	for model_tag in engine.model_loaded {
-		num_meshes := len(model.get_meshes(engine.models[model_tag]))
+	assert(card(engine.model_data_on_gpu) > 0)
+	for model_tag in engine.model_data_on_gpu {
+		num_meshes := len(engine.model_mesh_info[model_tag])
 		engine.vk_descriptor_sets[model_tag] = make([]vk.DescriptorSet, num_meshes)
 
 		for &descriptor_set in engine.vk_descriptor_sets[model_tag] {
@@ -1750,6 +1775,10 @@ engine_destroy :: proc(engine: ^Engine) {
 	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, &engine.vk_alloc)
 	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, &engine.vk_alloc)
 
+	for mesh_info in engine.model_mesh_info {
+		delete(mesh_info)
+	}
+
 	for image_list in engine.vk_mesh_images {
 		defer delete(image_list)
 
@@ -1792,7 +1821,7 @@ engine_destroy :: proc(engine: ^Engine) {
 		}
 	}
 
-	for tag in engine.model_loaded {
+	for tag in ModelTag {
 		model.destroy(&engine.models[tag])
 	}
 
