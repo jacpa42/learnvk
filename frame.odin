@@ -7,6 +7,7 @@ import "core:math/bits"
 import "core:math/linalg"
 import "core:mem"
 import "model"
+import "vendor:glfw"
 import vk "vendor:vulkan"
 
 frame :: proc(engine: ^Engine) {
@@ -376,21 +377,28 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 
 	corner := engine.models[CURRENT_MODEL].header.corner
 	dim := engine.models[CURRENT_MODEL].header.dim
-	world_from_model :=
+
+	world_from_model: matrix[4, 4]f32 = 1
+
+	model_from_vertex: matrix[4, 4]f32 =
 		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
 		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
-
-	model_from_vertex: matrix[4, 4]f32 = linalg.matrix4_from_euler_angle_x(engine.model_rotation)
 
 	return ShaderUniforms {
 		screen_from_world = screen_from_world,
 		world_from_model  = world_from_model,
 		model_from_vertex = model_from_vertex,
+		normal_matrix     = linalg.transpose(linalg.inverse(model_from_vertex)),
 
 		//
 		camera_position   = engine.camera.pos,
-		light_dir         = {0, 0, 1, 0},
-		light_color       = [4]f32{0x55, 0x66, 0x77, 0xff} / 0xff,
+		light_position    = 5 * [4]f32 {
+				f32(math.sin(glfw.GetTime() * 0.5)),
+				f32(math.cos(glfw.GetTime() * 0.5)),
+				0,
+				0,
+			},
+		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
 		ambient_light     = 0.1,
 		flags             = engine.shader_flags,
 	}

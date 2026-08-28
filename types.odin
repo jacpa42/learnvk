@@ -8,16 +8,8 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.bunny
-LOAD_MODELS := bit_set[ModelTag] {
-	CURRENT_MODEL,
-	.bunny,
-	.dragon,
-	.viking_room,
-	.dark_lord,
-	.cacodemon,
-	.sponza,
-}
+CURRENT_MODEL := ModelTag.viking_room
+LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
 PIPELINE :: Pipeline.shader
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
@@ -533,9 +525,10 @@ ShaderUniforms :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
+	normal_matrix:     matrix[4, 4]f32,
 
 	//
-	light_dir:         [4]f32,
+	light_position:    [4]f32,
 	light_color:       [4]f32,
 	camera_position:   [4]f32,
 	ambient_light:     f32,
@@ -576,7 +569,7 @@ Engine :: struct {
 	//
 	// Vulkan stuff
 	//
-	vk_alloc:                               vk.AllocationCallbacks,
+	vk_alloc:                               ^vk.AllocationCallbacks,
 	vk_messenger:                           vk.DebugUtilsMessengerEXT,
 	vk_instance:                            vk.Instance,
 

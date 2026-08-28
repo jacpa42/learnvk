@@ -7,7 +7,7 @@ struct Vertex {
 struct VertexOutput {
     float4 pos : SV_Position;
     float3 normal;
-    float3 view_dir;
+    float3 light_dir;
     float2 texcoord;
 };
 
@@ -22,8 +22,9 @@ struct Uniforms {
     float4x4 screen_from_world;
     float4x4 world_from_model;
     float4x4 model_from_vertex;
+    float4x4 normal_matrix;
 
-    float4   light_dir;
+    float4   light_position;
     float4   light_color;
     float4   camera_position;
     float    ambient_light;
@@ -52,8 +53,9 @@ VertexOutput vertex(
     float4 vertex_screen = mul(uniforms.screen_from_world, vertex_world);
 
     output.pos = vertex_screen;
-    output.normal = normalize(mul(uniforms.model_from_vertex, float4(input.normal, 1.0)).xyz);
-    output.view_dir = normalize(uniforms.camera_position.xyz - vertex_world.xyz);
+
+    output.normal = mul(float3x3(uniforms.normal_matrix), input.normal);
+    output.light_dir = uniforms.light_position.xyz - vertex_world.xyz;
     output.texcoord = input.texcoord;
 
     return output;
@@ -61,17 +63,19 @@ VertexOutput vertex(
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    float4 col = float4(
-        uniforms.light_color.xyz * float3(max(
-            dot(uniforms.light_dir.xyz, input.normal), 0.1
+    float4 col = uniforms.light_color * float4(
+        float3(max(
+            dot(input.light_dir, input.normal), 0.1
         )),
         1.0
     );
 
+    col.xyz += uniforms.ambient_light * uniforms.light_color.xyz;
+
     //
     // diffuse
     //
-    if (uniforms.flags & 1) {
+    if ((uniforms.flags & 1) > 0) {
         col *= tex_diffuse.Sample(input.texcoord);
     }
 

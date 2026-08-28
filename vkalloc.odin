@@ -5,11 +5,9 @@ import "core:log"
 import "core:mem"
 import vk "vendor:vulkan"
 
-@(private = "file")
-alloc: mem.Allocator
-
 // TODO: is this thread safe?
 vk_alloc_tracker: struct {
+	alloc:                            mem.Allocator,
 	num_alloc, num_free, num_realloc: int,
 	total_alloc, total_free:          int,
 	current_memory_size:              int,
@@ -18,18 +16,22 @@ vk_alloc_tracker: struct {
 	},
 }
 
-vk_alloc_init :: proc() -> vk.AllocationCallbacks {
-	alloc = context.allocator
+vk_alloc_callbacks: vk.AllocationCallbacks
+
+vk_alloc_init :: proc() -> ^vk.AllocationCallbacks {
+	vk_alloc_tracker.alloc = context.allocator
 	vk_alloc_tracker.allocations = make(type_of(vk_alloc_tracker.allocations), 128)
 
-	return {
-		pUserData = nil,
-		pfnAllocation = Allocation,
-		pfnReallocation = Reallocation,
-		pfnFree = Free,
+	vk_alloc_callbacks = {
+		pUserData             = nil,
+		pfnAllocation         = Allocation,
+		pfnReallocation       = Reallocation,
+		pfnFree               = Free,
 		pfnInternalAllocation = InternalAllocationNotification,
-		pfnInternalFree = InternalFreeNotification,
+		pfnInternalFree       = InternalFreeNotification,
 	}
+
+	return &vk_alloc_callbacks
 }
 
 vk_alloc_cleanup :: proc() {
@@ -44,7 +46,7 @@ Allocation :: proc "system" (
 	allocationScope: vk.SystemAllocationScope,
 ) -> rawptr {
 	context = {
-		allocator = alloc,
+		allocator = vk_alloc_tracker.alloc,
 		logger    = g_logger,
 	}
 
@@ -70,7 +72,7 @@ Reallocation :: proc "system" (
 	allocationScope: vk.SystemAllocationScope,
 ) -> rawptr {
 	context = {
-		allocator = alloc,
+		allocator = vk_alloc_tracker.alloc,
 		logger    = g_logger,
 	}
 
@@ -93,7 +95,7 @@ Reallocation :: proc "system" (
 @(private = "file")
 Free :: proc "system" (pUserData: rawptr, pMemory: rawptr) {
 	context = {
-		allocator = alloc,
+		allocator = vk_alloc_tracker.alloc,
 		logger    = g_logger,
 	}
 
@@ -115,7 +117,7 @@ InternalAllocationNotification :: proc "system" (
 	allocationScope: vk.SystemAllocationScope,
 ) {
 	context = {
-		allocator = alloc,
+		allocator = vk_alloc_tracker.alloc,
 		logger    = g_logger,
 	}
 
@@ -130,7 +132,7 @@ InternalFreeNotification :: proc "system" (
 	allocationScope: vk.SystemAllocationScope,
 ) {
 	context = {
-		allocator = alloc,
+		allocator = vk_alloc_tracker.alloc,
 		logger    = g_logger,
 	}
 

@@ -243,7 +243,7 @@ engine_create_buffer :: proc(
 		sharingMode = .EXCLUSIVE,
 	}
 
-	result := vk.CreateBuffer(engine.vk_device, &create_info, &engine.vk_alloc, &buffer)
+	result := vk.CreateBuffer(engine.vk_device, &create_info, engine.vk_alloc, &buffer)
 	ensure(result == .SUCCESS)
 
 	requirements: vk.MemoryRequirements
@@ -257,7 +257,7 @@ engine_create_buffer :: proc(
 		memoryTypeIndex = memory_type_index,
 	}
 
-	result = vk.AllocateMemory(engine.vk_device, &alloc_info, &engine.vk_alloc, &memory)
+	result = vk.AllocateMemory(engine.vk_device, &alloc_info, engine.vk_alloc, &memory)
 	ensure(result == .SUCCESS)
 
 	result = vk.BindBufferMemory(

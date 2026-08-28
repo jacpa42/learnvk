@@ -27,9 +27,6 @@ main :: proc() {
 	// Setup tracking allocator
 	//
 	when ODIN_DEBUG {
-		context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
-		defer log.destroy_console_logger(context.logger)
-
 		track: trace.Tracking_Allocator
 		trace.tracking_allocator_init(&track, context.allocator)
 		defer trace.tracking_allocator_destroy(&track)
@@ -71,9 +68,12 @@ main :: proc() {
 }
 
 engine_init :: proc(engine: ^Engine) {
-	g_logger = context.logger
-
 	result: vk.Result
+
+	g_logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
+	context.logger = g_logger
+	defer log.destroy_console_logger(context.logger)
+
 
 	//
 	// Setup the default state to generate the uniforms
@@ -184,7 +184,7 @@ engine_init :: proc(engine: ^Engine) {
 		result = glfw.CreateWindowSurface(
 			engine.vk_instance,
 			engine.window,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_surface,
 		)
 		ensure(result == .SUCCESS)
@@ -210,7 +210,7 @@ engine_init :: proc(engine: ^Engine) {
 		result = vk.CreateDebugUtilsMessengerEXT(
 			engine.vk_instance,
 			&create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_messenger,
 		)
 		ensure(result == .SUCCESS)
@@ -248,7 +248,7 @@ engine_init :: proc(engine: ^Engine) {
 		result = vk.CreatePipelineCache(
 			engine.vk_device,
 			&cache_create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_pipeline_cache,
 		)
 		ensure(result == .SUCCESS)
@@ -331,7 +331,7 @@ engine_init_instance :: proc(engine: ^Engine) {
 		ppEnabledExtensionNames = raw_data(required_extensions),
 	}
 
-	result := vk.CreateInstance(&create_info, &engine.vk_alloc, &engine.vk_instance)
+	result := vk.CreateInstance(&create_info, engine.vk_alloc, &engine.vk_instance)
 	ensure(result == .SUCCESS)
 }
 
@@ -351,7 +351,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		result = vk.CreateShaderModule(
 			engine.vk_device,
 			&shader_module_create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_pipeline_shader,
 		)
 		ensure(result == .SUCCESS)
@@ -521,7 +521,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		result = vk.CreateSampler(
 			engine.vk_device,
 			&sampler_create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_image_sampler[tag],
 		)
 		ensure(result == .SUCCESS)
@@ -551,7 +551,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	result = vk.CreatePipelineLayout(
 		engine.vk_device,
 		&pipeline_layout_create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_pipeline_layout,
 	)
 	ensure(result == .SUCCESS)
@@ -645,7 +645,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		engine.vk_pipeline_cache,
 		1,
 		&pipeline_create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_render_pipeline,
 	)
 	ensure(result == .SUCCESS)
@@ -795,7 +795,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 		engine.fallback_texture = {
 			engine_create_image(
 				device = engine.vk_device,
-				alloc = &engine.vk_alloc,
+				alloc = engine.vk_alloc,
 				width = 1,
 				height = 1,
 				format = .R8G8B8A8_SNORM,
@@ -859,7 +859,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 		task_slice := tasks[num_tasks_consumed:num_tasks_consumed + chunk_size]
 		threads[thread_index] = thread.create_and_start_with_poly_data3(
 			arg1 = engine.vk_device,
-			arg2 = &engine.vk_alloc,
+			arg2 = engine.vk_alloc,
 			arg3 = task_slice,
 			fn = eat_load_task,
 		)
@@ -871,7 +871,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Eat the remainder on main thread
 	//
-	eat_load_task(engine.vk_device, &engine.vk_alloc, tasks[num_tasks_consumed:])
+	eat_load_task(engine.vk_device, engine.vk_alloc, tasks[num_tasks_consumed:])
 	for t in threads[:thread_index] do thread.destroy(t)
 
 	for task in tasks {
@@ -924,7 +924,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	result = vk.CreateDescriptorPool(
 		engine.vk_device,
 		&pool_create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_descriptor_pool,
 	)
 	ensure(result == .SUCCESS)
@@ -947,7 +947,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		result = vk.CreateDescriptorSetLayout(
 			engine.vk_device,
 			&create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_set_layout,
 		)
 		ensure(result == .SUCCESS)
@@ -1155,7 +1155,7 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 	result = vk.CreateCommandPool(
 		engine.vk_device,
 		&cmd_pool_create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_cmdpool,
 	)
 	ensure(result == .SUCCESS)
@@ -1193,7 +1193,7 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 			result = vk.CreateSemaphore(
 				engine.vk_device,
 				&sema_create_info,
-				&engine.vk_alloc,
+				engine.vk_alloc,
 				&sema,
 			)
 			ensure(result == .SUCCESS)
@@ -1206,7 +1206,7 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 			result = vk.CreateSemaphore(
 				engine.vk_device,
 				&sema_create_info,
-				&engine.vk_alloc,
+				engine.vk_alloc,
 				&sema,
 			)
 			ensure(result == .SUCCESS)
@@ -1220,7 +1220,7 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 			flags = {.SIGNALED},
 		}
 		for &fence in engine.vk_draw_fences {
-			result = vk.CreateFence(engine.vk_device, &fence_create_info, &engine.vk_alloc, &fence)
+			result = vk.CreateFence(engine.vk_device, &fence_create_info, engine.vk_alloc, &fence)
 			ensure(result == .SUCCESS)
 		}
 	}
@@ -1396,7 +1396,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	result = vk.CreateDevice(
 		engine.vk_physical_device,
 		&create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_device,
 	)
 	ensure(result == .SUCCESS)
@@ -1572,7 +1572,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	result = vk.CreateSwapchainKHR(
 		engine.vk_device,
 		&create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_swapchain,
 	)
 	ensure(result == .SUCCESS)
@@ -1610,7 +1610,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		result = vk.CreateImageView(
 			engine.vk_device,
 			&create_info,
-			&engine.vk_alloc,
+			engine.vk_alloc,
 			&engine.vk_swapchain_image_views[i],
 		)
 		ensure(result == .SUCCESS)
@@ -1668,7 +1668,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	result = vk.CreateImage(
 		engine.vk_device,
 		&image_create_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_depth_image,
 	)
 	ensure(result == .SUCCESS)
@@ -1686,7 +1686,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	result = vk.AllocateMemory(
 		engine.vk_device,
 		&alloc_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_depth_image_memory,
 	)
 	ensure(result == .SUCCESS)
@@ -1723,7 +1723,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	result = vk.CreateImageView(
 		engine.vk_device,
 		&create_view_info,
-		&engine.vk_alloc,
+		engine.vk_alloc,
 		&engine.vk_depth_image_view,
 	)
 	ensure(result == .SUCCESS)
@@ -1745,17 +1745,17 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 	assert(engine.vk_swapchain != 0)
 	vk.DeviceWaitIdle(engine.vk_device)
 
-	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
+	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, engine.vk_alloc)
 	engine.vk_swapchain = 0
 
 	for image_view in engine.vk_swapchain_image_views {
-		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
+		vk.DestroyImageView(engine.vk_device, image_view, engine.vk_alloc)
 	}
 	clear(&engine.vk_swapchain_image_views)
 
-	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, &engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, &engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
+	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, engine.vk_alloc)
 
 	engine_init_swapchain(engine)
 }
@@ -1768,12 +1768,12 @@ engine_destroy :: proc(engine: ^Engine) {
 	}
 
 	for sampler in engine.vk_image_sampler {
-		vk.DestroySampler(engine.vk_device, sampler, &engine.vk_alloc)
+		vk.DestroySampler(engine.vk_device, sampler, engine.vk_alloc)
 	}
 
-	vk.FreeMemory(engine.vk_device, engine.fallback_texture.memory, &engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, &engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, &engine.vk_alloc)
+	vk.FreeMemory(engine.vk_device, engine.fallback_texture.memory, engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, engine.vk_alloc)
 
 	for mesh_info in engine.model_mesh_info {
 		delete(mesh_info)
@@ -1784,40 +1784,40 @@ engine_destroy :: proc(engine: ^Engine) {
 
 		for image_by_material in image_list {
 			for image in image_by_material {
-				vk.FreeMemory(engine.vk_device, image.memory, &engine.vk_alloc)
-				vk.DestroyImageView(engine.vk_device, image.view, &engine.vk_alloc)
-				vk.DestroyImage(engine.vk_device, image.image, &engine.vk_alloc)
+				vk.FreeMemory(engine.vk_device, image.memory, engine.vk_alloc)
+				vk.DestroyImageView(engine.vk_device, image.view, engine.vk_alloc)
+				vk.DestroyImage(engine.vk_device, image.image, engine.vk_alloc)
 			}
 		}
 	}
 
 
-	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, &engine.vk_alloc)
-	vk.DestroyBuffer(engine.vk_device, engine.vk_transfer_buffer, &engine.vk_alloc)
+	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, engine.vk_alloc)
+	vk.DestroyBuffer(engine.vk_device, engine.vk_transfer_buffer, engine.vk_alloc)
 
-	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, &engine.vk_alloc)
+	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, engine.vk_alloc)
 
-	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, &engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, &engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, &engine.vk_alloc)
+	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, engine.vk_alloc)
+	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, engine.vk_alloc)
 
-	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, &engine.vk_alloc)
+	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, engine.vk_alloc)
 
 	for mem in engine.vk_uniform_buffers_memory {
-		vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
+		vk.FreeMemory(engine.vk_device, mem, engine.vk_alloc)
 	}
 	for buffer_mem_slice in engine.vk_vertex_buffers_memory {
 		for mem in buffer_mem_slice {
-			vk.FreeMemory(engine.vk_device, mem, &engine.vk_alloc)
+			vk.FreeMemory(engine.vk_device, mem, engine.vk_alloc)
 		}
 	}
 
 	for buffer in engine.vk_uniform_buffers {
-		vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
+		vk.DestroyBuffer(engine.vk_device, buffer, engine.vk_alloc)
 	}
 	for model_buffers in engine.vk_model_buffer {
 		for buffer in model_buffers {
-			vk.DestroyBuffer(engine.vk_device, buffer, &engine.vk_alloc)
+			vk.DestroyBuffer(engine.vk_device, buffer, engine.vk_alloc)
 		}
 	}
 
@@ -1826,33 +1826,33 @@ engine_destroy :: proc(engine: ^Engine) {
 	}
 
 	for sema in engine.vk_swapchain_semas {
-		vk.DestroySemaphore(engine.vk_device, sema, &engine.vk_alloc)
+		vk.DestroySemaphore(engine.vk_device, sema, engine.vk_alloc)
 	}
 
 	for sema in engine.vk_present_complete_semas {
-		vk.DestroySemaphore(engine.vk_device, sema, &engine.vk_alloc)
+		vk.DestroySemaphore(engine.vk_device, sema, engine.vk_alloc)
 	}
 
 	for fence in engine.vk_draw_fences {
-		vk.DestroyFence(engine.vk_device, fence, &engine.vk_alloc)
+		vk.DestroyFence(engine.vk_device, fence, engine.vk_alloc)
 	}
 
 	// cmd buffer is destroyed when we destroy the pool (I think)
-	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, &engine.vk_alloc)
+	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, engine.vk_alloc)
 	engine.vk_cmdbufs = {}
 
-	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, &engine.vk_alloc)
-	vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout, &engine.vk_alloc)
-	vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline, &engine.vk_alloc)
-	vk.DestroyShaderModule(engine.vk_device, engine.vk_pipeline_shader, &engine.vk_alloc)
+	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, engine.vk_alloc)
+	vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout, engine.vk_alloc)
+	vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline, engine.vk_alloc)
+	vk.DestroyShaderModule(engine.vk_device, engine.vk_pipeline_shader, engine.vk_alloc)
 	for image_view in engine.vk_swapchain_image_views {
-		vk.DestroyImageView(engine.vk_device, image_view, &engine.vk_alloc)
+		vk.DestroyImageView(engine.vk_device, image_view, engine.vk_alloc)
 	}
-	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, &engine.vk_alloc)
-	vk.DestroySurfaceKHR(engine.vk_instance, engine.vk_surface, &engine.vk_alloc)
-	vk.DestroyDevice(engine.vk_device, &engine.vk_alloc)
-	vk.DestroyDebugUtilsMessengerEXT(engine.vk_instance, engine.vk_messenger, &engine.vk_alloc)
-	vk.DestroyInstance(engine.vk_instance, &engine.vk_alloc)
+	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, engine.vk_alloc)
+	vk.DestroySurfaceKHR(engine.vk_instance, engine.vk_surface, engine.vk_alloc)
+	vk.DestroyDevice(engine.vk_device, engine.vk_alloc)
+	vk.DestroyDebugUtilsMessengerEXT(engine.vk_instance, engine.vk_messenger, engine.vk_alloc)
+	vk.DestroyInstance(engine.vk_instance, engine.vk_alloc)
 
 	vk_alloc_cleanup()
 
