@@ -1,11 +1,8 @@
 package learnvk
 
 import "base:runtime"
-import "core:fmt"
 import "core:log"
 import "core:math"
-import "core:math/bits"
-import "core:mem"
 import "core:path/filepath"
 import "core:strings"
 import "model"
@@ -13,12 +10,13 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer) {
+cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer, loc := #caller_location) {
 	begin_info := vk.CommandBufferBeginInfo {
-		sType            = .COMMAND_BUFFER_BEGIN_INFO,
-		flags            = {.ONE_TIME_SUBMIT},
-		pInheritanceInfo = nil,
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
 	}
+
+	log.infof("Starting oneshot cmdbuffer {:x} {}", cmdbuf, loc)
 
 	result := vk.BeginCommandBuffer(cmdbuf, &begin_info)
 	ensure(result == .SUCCESS)
@@ -60,104 +58,6 @@ find_format :: proc(
 
 	assert(false)
 	return .UNDEFINED
-}
-
-engine_upload_image_data :: proc(
-	engine: ^Engine,
-	image: vk.Image,
-	data: []u8,
-	#any_int width: u32,
-	#any_int height: u32,
-) {
-	//
-	// Upload first to the staging buffer
-	//
-	assert(len(data) <= STAGING_BUFFER_SIZE)
-	mem.copy_non_overlapping(
-		dst = engine.vk_transfer_buffer_mmap,
-		src = raw_data(data),
-		len = len(data),
-	)
-
-	//
-	// Execute the command buffer operations to create our image gpu side
-	//
-	cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
-	defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
-
-	//
-	// Setup a memory barrier which syncs the image transition and mem copy
-	// of pixel data. the mem copy happens directly after the memory transition.
-	//
-	image_barrier := vk.ImageMemoryBarrier {
-		sType = .IMAGE_MEMORY_BARRIER,
-		srcAccessMask = {},
-		dstAccessMask = {.TRANSFER_WRITE},
-		oldLayout = .UNDEFINED,
-		newLayout = .TRANSFER_DST_OPTIMAL,
-		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-		image = image,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-	}
-
-	vk.CmdPipelineBarrier(
-		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-		srcStageMask = {.TOP_OF_PIPE},
-		dstStageMask = {.TRANSFER},
-		dependencyFlags = {},
-		memoryBarrierCount = 0,
-		pMemoryBarriers = nil,
-		bufferMemoryBarrierCount = 0,
-		pBufferMemoryBarriers = nil,
-		imageMemoryBarrierCount = 1,
-		pImageMemoryBarriers = &image_barrier,
-	)
-
-	//
-	// Add the copy command
-	//
-	region := vk.BufferImageCopy {
-		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
-		imageExtent = {width, height, 1},
-	}
-
-	vk.CmdCopyBufferToImage(
-		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-		srcBuffer = engine.vk_transfer_buffer,
-		dstImage = image,
-		dstImageLayout = .TRANSFER_DST_OPTIMAL,
-		regionCount = 1,
-		pRegions = &region,
-	)
-
-	//
-	// Transition the image to be optimal for sampling
-	//
-	image_barrier = vk.ImageMemoryBarrier {
-		sType = .IMAGE_MEMORY_BARRIER,
-		srcAccessMask = {.TRANSFER_WRITE},
-		dstAccessMask = {.SHADER_READ},
-		oldLayout = .TRANSFER_DST_OPTIMAL,
-		newLayout = .SHADER_READ_ONLY_OPTIMAL,
-		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-		image = image,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-	}
-
-	vk.CmdPipelineBarrier(
-		commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-		srcStageMask = {.TRANSFER},
-		dstStageMask = {.FRAGMENT_SHADER},
-		dependencyFlags = {},
-		memoryBarrierCount = 0,
-		pMemoryBarriers = nil,
-		bufferMemoryBarrierCount = 0,
-		pBufferMemoryBarriers = nil,
-		imageMemoryBarrierCount = 1,
-		pImageMemoryBarriers = &image_barrier,
-	)
 }
 
 engine_create_image :: proc "contextless" (
@@ -228,7 +128,8 @@ engine_create_image :: proc "contextless" (
 }
 
 engine_create_buffer :: proc(
-	engine: ^Engine,
+	device: vk.Device,
+	alloc: ^vk.AllocationCallbacks,
 	size: vk.DeviceSize,
 	usage: vk.BufferUsageFlags,
 	desired_properties: vk.MemoryPropertyFlags,
@@ -243,11 +144,11 @@ engine_create_buffer :: proc(
 		sharingMode = .EXCLUSIVE,
 	}
 
-	result := vk.CreateBuffer(engine.vk_device, &create_info, engine.vk_alloc, &buffer)
+	result := vk.CreateBuffer(device, &create_info, alloc, &buffer)
 	ensure(result == .SUCCESS)
 
 	requirements: vk.MemoryRequirements
-	vk.GetBufferMemoryRequirements(engine.vk_device, buffer, &requirements)
+	vk.GetBufferMemoryRequirements(device, buffer, &requirements)
 
 	memory_type_index := device_get_memory_type_index(requirements, desired_properties)
 
@@ -257,11 +158,11 @@ engine_create_buffer :: proc(
 		memoryTypeIndex = memory_type_index,
 	}
 
-	result = vk.AllocateMemory(engine.vk_device, &alloc_info, engine.vk_alloc, &memory)
+	result = vk.AllocateMemory(device, &alloc_info, alloc, &memory)
 	ensure(result == .SUCCESS)
 
 	result = vk.BindBufferMemory(
-		engine.vk_device,
+		device,
 		buffer = buffer,
 		memory = memory,
 		memoryOffset = 0, // TODO: What is this about?
@@ -515,6 +416,8 @@ callback_cursor_move :: proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 
 callback_framebuffer_size :: proc "c" (window: glfw.WindowHandle, width, height: i32) {
 	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
+	context = runtime.default_context()
+	log.warnf("Framebuffer resize {}x{}", width, height)
 	engine.framebuffer_resized = true
 }
 

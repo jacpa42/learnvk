@@ -12,11 +12,12 @@ CURRENT_MODEL := ModelTag.viking_room
 LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
 PIPELINE :: Pipeline.shader
 
+MAX_INSTANCES :: 100_000
+
 CULL_MODE :: vk.CullModeFlags{.BACK}
 MAX_MESH_NAME_LEN :: 64
 ENABLE_DEPTH_TEST :: true
 ENABLE_VALIDATION_LAYERS :: ODIN_DEBUG
-FRAMES_IN_FLIGHT :: 2
 FRONT_FACE :: vk.FrontFace.CLOCKWISE
 LINE_WIDTH: f32 : 1
 MAX_DYNAMIC_STATE :: 90
@@ -523,9 +524,6 @@ UniformFlag :: enum {
 
 ShaderUniforms :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
-	world_from_model:  matrix[4, 4]f32,
-	model_from_vertex: matrix[4, 4]f32,
-	normal_matrix:     matrix[4, 4]f32,
 
 	//
 	light_position:    [4]f32,
@@ -533,6 +531,12 @@ ShaderUniforms :: struct #all_or_none #align (16) {
 	camera_position:   [4]f32,
 	ambient_light:     f32,
 	flags:             bit_set[UniformFlag;u32],
+}
+
+Instance :: struct #all_or_none #align (16) {
+	world_from_model:  matrix[4, 4]f32,
+	model_from_vertex: matrix[4, 4]f32,
+	normal_matrix:     matrix[4, 4]f32,
 }
 
 ModelBuffer :: enum {
@@ -565,6 +569,7 @@ Engine :: struct {
 		name:        [dynamic; MAX_MESH_NAME_LEN]byte,
 	},
 	models:                                 [ModelTag]Model,
+	instance_data:                          ^[dynamic; MAX_INSTANCES]Instance,
 
 	//
 	// Vulkan stuff
@@ -590,7 +595,7 @@ Engine :: struct {
 	vk_physical_device_required_extensions: [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
 	vk_device:                              vk.Device,
 	vk_queue:                               vk.Queue,
-	vk_render_queue_index:                  u32,
+	vk_queue_index:                         u32,
 	vk_surface:                             vk.SurfaceKHR,
 
 	//
@@ -613,20 +618,20 @@ Engine :: struct {
 	vk_descriptor_sets:                     [ModelTag][]vk.DescriptorSet,
 
 	//
-	// Uniform Buffers
+	// Instance Data buffer
 	//
-	vk_uniform_buffers:                     [FRAMES_IN_FLIGHT]vk.Buffer,
-	vk_uniform_buffers_memory:              [FRAMES_IN_FLIGHT]vk.DeviceMemory,
-	vk_uniform_buffers_mmapped:             [FRAMES_IN_FLIGHT]rawptr,
 
 	//
-	// Vertex Buffers
+	// Buffers
 	//
-	vk_transfer_buffer_mmap:                rawptr,
-	vk_transfer_buffer:                     vk.Buffer,
-	vk_transfer_buffer_memory:              vk.DeviceMemory,
+	transfer_queue:                         GpuTransferQueue,
+	vk_uniform_buffer:                      vk.Buffer,
+	vk_uniform_buffer_memory:               vk.DeviceMemory,
+	vk_uniform_buffer_mmapped:              rawptr,
 	vk_model_buffer:                        [ModelTag][ModelBuffer]vk.Buffer,
 	vk_vertex_buffers_memory:               [ModelTag][ModelBuffer]vk.DeviceMemory,
+	vk_instance_buffer:                     vk.Buffer,
+	vk_instance_buffer_memory:              vk.DeviceMemory,
 
 	//
 	// mesh textures
@@ -663,10 +668,9 @@ Engine :: struct {
 	// Command buffer
 	//
 	vk_cmdpool:                             vk.CommandPool,
-	vk_frame_index:                         u32,
-	vk_cmdbufs:                             [FRAMES_IN_FLIGHT]vk.CommandBuffer,
+	vk_cmdbuf:                              vk.CommandBuffer,
 	vk_swapchain_semas:                     [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
-	vk_present_complete_semas:              [FRAMES_IN_FLIGHT]vk.Semaphore,
-	vk_draw_fences:                         [FRAMES_IN_FLIGHT]vk.Fence,
+	vk_present_complete_sema:               vk.Semaphore,
+	vk_draw_fence:                          vk.Fence,
 }
 

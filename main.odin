@@ -1,5 +1,10 @@
 package learnvk
 
+//
+// TODO: Figure out how to do instanced rendering
+// TODO: Figure out how to use an array of samplers
+//
+
 import "base:runtime"
 import "core:c"
 import "core:debug/trace"
@@ -7,7 +12,6 @@ import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:math/bits"
-import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:thread"
@@ -19,6 +23,7 @@ import vk "vendor:vulkan"
 
 g_logger: runtime.Logger
 physical_device_features: vk.PhysicalDeviceFeatures
+physical_device_limits: vk.PhysicalDeviceLimits
 physical_device_properties: vk.PhysicalDeviceProperties
 physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties
 
@@ -44,6 +49,9 @@ main :: proc() {
 	engine_init(&engine)
 	defer engine_destroy(&engine)
 
+	MS_PER_FRAME :: 16_666_666
+	MS_PER_FRAME_F32 :: MS_PER_FRAME * 1e-9
+
 	//
 	// Main loop
 	//
@@ -51,7 +59,6 @@ main :: proc() {
 	for !glfw.WindowShouldClose(engine.window) {
 		time.stopwatch_reset(&frame_watch)
 		time.stopwatch_start(&frame_watch)
-		defer engine.delta_time = f32(f64(time.stopwatch_duration(frame_watch)) * 1e-9)
 
 		glfw.PollEvents()
 
@@ -63,7 +70,10 @@ main :: proc() {
 		frame(&engine)
 
 		free_all(context.temp_allocator)
-		time.sleep(4 * time.Millisecond)
+
+		elapsed := time.stopwatch_duration(frame_watch)
+		engine.delta_time = max(f32(elapsed) * 1e-9, MS_PER_FRAME_F32)
+		time.sleep(max(0, elapsed - MS_PER_FRAME))
 	}
 }
 
@@ -73,7 +83,6 @@ engine_init :: proc(engine: ^Engine) {
 	g_logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
 	context.logger = g_logger
 	defer log.destroy_console_logger(context.logger)
-
 
 	//
 	// Setup the default state to generate the uniforms
@@ -139,6 +148,7 @@ engine_init :: proc(engine: ^Engine) {
 
 	assert(card(engine.model_loaded) > 0)
 	assert(CURRENT_MODEL in engine.model_loaded)
+
 
 	//
 	// Initialize GLFW and create our window
@@ -258,6 +268,16 @@ engine_init :: proc(engine: ^Engine) {
 	// Initialize the graphics pipelines
 	//
 	engine_init_graphics_pipeline(engine)
+
+	//
+	// Setup the instances
+	//
+	engine.instance_data = new([dynamic; MAX_INSTANCES]Instance)
+
+	//
+	// Ensure that all the data has been sent to the gpu
+	//
+	queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
 }
 
 engine_init_instance :: proc(engine: ^Engine) {
@@ -657,13 +677,14 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	//
 	// Create the uniform buffers
 	//
-	for i in 0 ..< len(engine.vk_uniform_buffers) {
+	{
 		size := vk.DeviceSize(size_of(ShaderUniforms))
 		usage := vk.BufferUsageFlags{.UNIFORM_BUFFER}
 		desired_properties := vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}
 
-		engine.vk_uniform_buffers[i], engine.vk_uniform_buffers_memory[i] = engine_create_buffer(
-			engine,
+		engine.vk_uniform_buffer, engine.vk_uniform_buffer_memory = engine_create_buffer(
+			engine.vk_device,
+			engine.vk_alloc,
 			size,
 			usage,
 			desired_properties,
@@ -674,34 +695,38 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 		//
 		result = vk.MapMemory(
 			engine.vk_device,
-			engine.vk_uniform_buffers_memory[i],
+			engine.vk_uniform_buffer_memory,
 			offset = 0,
 			size = size_of(ShaderUniforms),
 			flags = {},
-			ppData = &engine.vk_uniform_buffers_mmapped[i],
+			ppData = &engine.vk_uniform_buffer_mmapped,
 		)
 		ensure(result == .SUCCESS)
 	}
 
 	//
-	// Create and map the transfer buffer
+	// Initialize the upload queue
 	//
-	engine.vk_transfer_buffer, engine.vk_transfer_buffer_memory = engine_create_buffer(
-		engine,
-		STAGING_BUFFER_SIZE,
-		{.TRANSFER_SRC},
-		{.HOST_VISIBLE, .HOST_COHERENT},
+	queue_init(
+		queue = &engine.transfer_queue,
+		device = engine.vk_device,
+		alloc = engine.vk_alloc,
+		transfer_buf_size = STAGING_BUFFER_SIZE,
+		cmdpool = engine.vk_cmdpool,
 	)
 
-	result = vk.MapMemory(
+	//
+	// Create our instance buffer
+	//
+
+	engine.vk_instance_buffer, engine.vk_instance_buffer_memory = engine_create_buffer(
 		engine.vk_device,
-		engine.vk_transfer_buffer_memory,
-		offset = 0,
-		size = auto_cast vk.WHOLE_SIZE,
-		flags = {},
-		ppData = &engine.vk_transfer_buffer_mmap,
+		engine.vk_alloc,
+		vk.DeviceSize(size_of(Instance) * MAX_INSTANCES),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
+		{.DEVICE_LOCAL},
 	)
-	ensure(result == .SUCCESS)
+
 
 	//
 	// Fill the vertex buffers with data
@@ -751,37 +776,26 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			assert(slice.size(memory_to_upload) <= STAGING_BUFFER_SIZE)
 
 			engine.vk_model_buffer[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
-				engine_create_buffer(engine, size, usage, desired_properties)
+				engine_create_buffer(
+					engine.vk_device,
+					engine.vk_alloc,
+					size,
+					usage,
+					desired_properties,
+				)
 
-			//
-			// upload first to the staging buffer
-			//
-			mem.copy_non_overlapping(
-				dst = engine.vk_transfer_buffer_mmap,
-				src = raw_data(memory_to_upload),
-				len = slice.size(memory_to_upload),
-			)
 
 			//
 			// The copy into our buffer. This involves submitting command via the
 			// command buffer.
 			//
-
-			cmd_oneshot_begin(engine.vk_cmdbufs[engine.vk_frame_index])
-			defer cmd_oneshot_end(engine.vk_cmdbufs[engine.vk_frame_index], engine.vk_queue)
-
-			region := vk.BufferCopy {
-					srcOffset = 0,
-					dstOffset = 0,
-					size      = auto_cast slice.size(memory_to_upload),
-				}
-
-			vk.CmdCopyBuffer(
-				commandBuffer = engine.vk_cmdbufs[engine.vk_frame_index],
-				srcBuffer = engine.vk_transfer_buffer,
-				dstBuffer = engine.vk_model_buffer[model_tag][buffer_tag],
-				regionCount = 1,
-				pRegions = &region,
+			queue_append_whole_buffer(
+				queue = &engine.transfer_queue,
+				device = engine.vk_device,
+				vk_queue = engine.vk_queue,
+				buffer = engine.vk_model_buffer[model_tag][buffer_tag],
+				initial_offset = 0,
+				data = memory_to_upload,
 			)
 		}
 	}
@@ -804,21 +818,19 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 			),
 		}
 
-		width := u32(1)
-		height := u32(1)
 		pixel_data := []u8{0xff, 0xff, 0xff, 0xff}
-		engine_upload_image_data(
-			engine,
+		ok := queue_append_whole_image(
+			&engine.transfer_queue,
+			engine.vk_device,
+			engine.vk_queue,
 			engine.fallback_texture.image,
+			{1, 1, 1},
 			pixel_data,
-			width = width,
-			height = height,
 		)
+		ensure(ok)
 
 		log.infof(
-			"fallback_texture <-> wxh({}x{}) pixels({}) %#v",
-			width,
-			height,
+			"fallback_texture <-> wxh(1x1) pixels({}) %#v",
 			pixel_data,
 			engine.fallback_texture,
 		)
@@ -876,13 +888,23 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 
 	for task in tasks {
 		if task.output.ok {
-			engine_upload_image_data(
-				engine,
+
+			switch queue_can_append_image(&engine.transfer_queue, len(task.output.data)) {
+			case .yes:
+			case .after_flush:
+				queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
+			case .buffer_too_small:
+				panic("buffer is too small to transfer image!")
+			}
+
+			ok := queue_append_image(
+				&engine.transfer_queue,
 				task.input.texture.image,
+				{u32(task.output.width), u32(task.output.height), 1},
 				task.output.data,
-				task.output.width,
-				task.output.height,
 			)
+			ensure(ok)
+
 		} else {
 			log.warnf("Didn't succeed in the task load for \"{}\"", task.input.texture_cpath)
 		}
@@ -902,13 +924,15 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	}
 
 	maxSets: u32
-	pool_sizes := [2]vk.DescriptorPoolSize {
+	pool_sizes := [3]vk.DescriptorPoolSize {
 		{type = .UNIFORM_BUFFER, descriptorCount = 0},
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 0},
+		{type = .STORAGE_BUFFER, descriptorCount = 0},
 	}
 	for layout in SHADER_PIPELINE_SET_LAYOUTS {
 		if layout.descriptorType == .UNIFORM_BUFFER do pool_sizes[0].descriptorCount += total_meshes
 		if layout.descriptorType == .COMBINED_IMAGE_SAMPLER do pool_sizes[1].descriptorCount += total_meshes
+		if layout.descriptorType == .STORAGE_BUFFER do pool_sizes[2].descriptorCount += total_meshes
 
 		maxSets += total_meshes
 	}
@@ -1035,10 +1059,20 @@ engine_configure_descriptor_set :: proc(
 
 		switch binding_tag {
 
-		case .uniforms:
+		case .instance_data:
 			// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
 			buffer_info = vk.DescriptorBufferInfo {
-				buffer = engine.vk_uniform_buffers[0],
+				buffer = engine.vk_instance_buffer,
+				range  = vk.DeviceSize(vk.WHOLE_SIZE),
+			}
+
+			write_ds.pBufferInfo = &buffer_info
+
+			when LOG do fmt.eprintfln("{}", buffer_info)
+
+		case .uniforms:
+			buffer_info = vk.DescriptorBufferInfo {
+				buffer = engine.vk_uniform_buffer,
 				range  = vk.DeviceSize(vk.WHOLE_SIZE),
 			}
 
@@ -1133,6 +1167,7 @@ engine_configure_descriptor_set :: proc(
 			}
 
 			write_ds.pImageInfo = &image_info
+
 		}
 
 		vk.UpdateDescriptorSets(engine.vk_device, 1, &write_ds, 0, nil)
@@ -1149,7 +1184,7 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 	cmd_pool_create_info := vk.CommandPoolCreateInfo {
 		sType            = .COMMAND_POOL_CREATE_INFO,
 		flags            = {.RESET_COMMAND_BUFFER},
-		queueFamilyIndex = engine.vk_render_queue_index,
+		queueFamilyIndex = engine.vk_queue_index,
 	}
 
 	result = vk.CreateCommandPool(
@@ -1168,13 +1203,13 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = engine.vk_cmdpool,
 		level              = .PRIMARY,
-		commandBufferCount = u32(len(engine.vk_cmdbufs)),
+		commandBufferCount = 1,
 	}
 
 	result = vk.AllocateCommandBuffers(
 		engine.vk_device,
 		&cmdbuf_alloc_create_info,
-		raw_data(engine.vk_cmdbufs[:]),
+		&engine.vk_cmdbuf,
 	)
 	ensure(result == .SUCCESS)
 
@@ -1202,15 +1237,13 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 		//
 		// Create the semaphores for the frame presentation completion
 		//
-		for &sema in engine.vk_present_complete_semas {
-			result = vk.CreateSemaphore(
-				engine.vk_device,
-				&sema_create_info,
-				engine.vk_alloc,
-				&sema,
-			)
-			ensure(result == .SUCCESS)
-		}
+		result = vk.CreateSemaphore(
+			engine.vk_device,
+			&sema_create_info,
+			engine.vk_alloc,
+			&engine.vk_present_complete_sema,
+		)
+		ensure(result == .SUCCESS)
 
 		//
 		// Create the fences
@@ -1219,10 +1252,13 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 			sType = .FENCE_CREATE_INFO,
 			flags = {.SIGNALED},
 		}
-		for &fence in engine.vk_draw_fences {
-			result = vk.CreateFence(engine.vk_device, &fence_create_info, engine.vk_alloc, &fence)
-			ensure(result == .SUCCESS)
-		}
+		result = vk.CreateFence(
+			engine.vk_device,
+			&fence_create_info,
+			engine.vk_alloc,
+			&engine.vk_draw_fence,
+		)
+		ensure(result == .SUCCESS)
 	}
 }
 
@@ -1310,10 +1346,12 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	// Grab the first queue with graphics capabilities
 	//
-	engine.vk_render_queue_index = bits.U32_MAX
-	for properties, index in queue_properties {
 
+	engine.vk_queue_index = bits.U32_MAX
+
+	for properties, index in queue_properties {
 		has_graphics := .GRAPHICS in properties.queueFlags
+		has_transfer := .TRANSFER in properties.queueFlags
 
 		has_presentation: b32
 		vk.GetPhysicalDeviceSurfaceSupportKHR(
@@ -1323,21 +1361,18 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 			&has_presentation,
 		)
 
-		if has_graphics && has_presentation {
-			engine.vk_render_queue_index = u32(index)
+		if has_graphics && has_transfer && has_presentation {
+			engine.vk_queue_index = u32(index)
 			break
 		}
 	}
 
-	ensure(
-		engine.vk_render_queue_index != bits.U32_MAX,
-		"We need a queue with graphics capabilities",
-	)
+	ensure(engine.vk_queue_index != bits.U32_MAX, "Failed to find queue index for graphics queue")
 
-	queue_priority: f32 = 0.5 // Doesn't really matter for 1 queue?
+	queue_priority := f32(0.5)
 	queue_create_info := vk.DeviceQueueCreateInfo {
 		sType            = .DEVICE_QUEUE_CREATE_INFO,
-		queueFamilyIndex = engine.vk_render_queue_index,
+		queueFamilyIndex = engine.vk_queue_index,
 		queueCount       = 1,
 		pQueuePriorities = &queue_priority,
 	}
@@ -1347,7 +1382,6 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	render_local_read := vk.PhysicalDeviceDynamicRenderingLocalReadFeatures {
 		sType                     = .PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES,
-		pNext                     = nil,
 		dynamicRenderingLocalRead = true,
 	}
 
@@ -1405,7 +1439,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	// Get the render/graphics queue
 	//
-	vk.GetDeviceQueue(engine.vk_device, engine.vk_render_queue_index, 0, &engine.vk_queue)
+	vk.GetDeviceQueue(engine.vk_device, engine.vk_queue_index, 0, &engine.vk_queue)
 	ensure(engine.vk_queue != nil)
 }
 
@@ -1522,7 +1556,7 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		// Zero is a special value meaning there is no maximum here
 		min_images := capabilities.minImageCount + 1
 		max_images := capabilities.maxImageCount
-		if max_images == 0 {max_images = bits.U32_MAX}
+		if max_images == 0 do max_images = bits.U32_MAX
 
 		if present_mode == .FIFO {
 			engine.vk_min_image_count = 2
@@ -1763,6 +1797,8 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 engine_destroy :: proc(engine: ^Engine) {
 	vk.DeviceWaitIdle(engine.vk_device)
 
+	free(engine.instance_data)
+
 	for dset in engine.vk_descriptor_sets {
 		delete(dset)
 	}
@@ -1791,10 +1827,6 @@ engine_destroy :: proc(engine: ^Engine) {
 		}
 	}
 
-
-	vk.FreeMemory(engine.vk_device, engine.vk_transfer_buffer_memory, engine.vk_alloc)
-	vk.DestroyBuffer(engine.vk_device, engine.vk_transfer_buffer, engine.vk_alloc)
-
 	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, engine.vk_alloc)
 
 	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, engine.vk_alloc)
@@ -1803,18 +1835,18 @@ engine_destroy :: proc(engine: ^Engine) {
 
 	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, engine.vk_alloc)
 
-	for mem in engine.vk_uniform_buffers_memory {
-		vk.FreeMemory(engine.vk_device, mem, engine.vk_alloc)
-	}
+	vk.FreeMemory(engine.vk_device, engine.vk_instance_buffer_memory, engine.vk_alloc)
+	vk.DestroyBuffer(engine.vk_device, engine.vk_instance_buffer, engine.vk_alloc)
+
+	vk.FreeMemory(engine.vk_device, engine.vk_uniform_buffer_memory, engine.vk_alloc)
+	vk.DestroyBuffer(engine.vk_device, engine.vk_uniform_buffer, engine.vk_alloc)
+
 	for buffer_mem_slice in engine.vk_vertex_buffers_memory {
 		for mem in buffer_mem_slice {
 			vk.FreeMemory(engine.vk_device, mem, engine.vk_alloc)
 		}
 	}
 
-	for buffer in engine.vk_uniform_buffers {
-		vk.DestroyBuffer(engine.vk_device, buffer, engine.vk_alloc)
-	}
 	for model_buffers in engine.vk_model_buffer {
 		for buffer in model_buffers {
 			vk.DestroyBuffer(engine.vk_device, buffer, engine.vk_alloc)
@@ -1829,17 +1861,14 @@ engine_destroy :: proc(engine: ^Engine) {
 		vk.DestroySemaphore(engine.vk_device, sema, engine.vk_alloc)
 	}
 
-	for sema in engine.vk_present_complete_semas {
-		vk.DestroySemaphore(engine.vk_device, sema, engine.vk_alloc)
-	}
+	vk.DestroySemaphore(engine.vk_device, engine.vk_present_complete_sema, engine.vk_alloc)
+	vk.DestroyFence(engine.vk_device, engine.vk_draw_fence, engine.vk_alloc)
 
-	for fence in engine.vk_draw_fences {
-		vk.DestroyFence(engine.vk_device, fence, engine.vk_alloc)
-	}
+	queue_destroy(engine.vk_device, &engine.transfer_queue, engine.vk_alloc)
 
 	// cmd buffer is destroyed when we destroy the pool (I think)
 	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, engine.vk_alloc)
-	engine.vk_cmdbufs = {}
+	engine.vk_cmdbuf = {}
 
 	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, engine.vk_alloc)
 	vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout, engine.vk_alloc)

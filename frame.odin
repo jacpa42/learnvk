@@ -6,7 +6,7 @@ import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
 import "core:mem"
-import "model"
+import "core:slice"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -22,18 +22,10 @@ frame :: proc(engine: ^Engine) {
 		engine_recreate_swapchain(engine)
 	}
 
-	defer engine.vk_frame_index = (engine.vk_frame_index + 1) % FRAMES_IN_FLIGHT
-
 	//
 	// Before we begin our frame, we need to wait for the draw fence
 	//
-	result = vk.WaitForFences(
-		engine.vk_device,
-		1,
-		&engine.vk_draw_fences[engine.vk_frame_index],
-		true,
-		bits.U64_MAX,
-	)
+	result = vk.WaitForFences(engine.vk_device, 1, &engine.vk_draw_fence, true, bits.U64_MAX)
 	ensure(result == .SUCCESS)
 
 	//
@@ -43,7 +35,7 @@ frame :: proc(engine: ^Engine) {
 		device = engine.vk_device,
 		swapchain = engine.vk_swapchain,
 		timeout = bits.U64_MAX,
-		semaphore = engine.vk_present_complete_semas[engine.vk_frame_index],
+		semaphore = engine.vk_present_complete_sema,
 		fence = {},
 		pImageIndex = &engine.vk_image_index,
 	)
@@ -62,7 +54,7 @@ frame :: proc(engine: ^Engine) {
 	// Reset the draw fences. Must happen *after* we are sure we will render to
 	// the current image view.
 	//
-	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fences[engine.vk_frame_index])
+	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fence)
 	ensure(result == .SUCCESS)
 
 	//
@@ -77,7 +69,7 @@ frame :: proc(engine: ^Engine) {
 }
 
 engine_fill_cmd_buffer :: proc(engine: ^Engine) {
-	commandBuffer := engine.vk_cmdbufs[engine.vk_frame_index]
+	commandBuffer := engine.vk_cmdbuf
 
 	//
 	// Begin recording the command buffer
@@ -182,10 +174,25 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	uniforms := engine_make_uniforms(engine)
 
 	mem.copy_non_overlapping(
-		dst = engine.vk_uniform_buffers_mmapped[engine.vk_frame_index],
+		dst = engine.vk_uniform_buffer_mmapped,
 		src = rawptr(&uniforms),
 		len = size_of(uniforms),
 	)
+
+	//
+	// Update instance data
+	//
+	instance_data := engine_make_instance_data(engine)
+
+	queue_append_whole_buffer(
+		&engine.transfer_queue,
+		engine.vk_device,
+		engine.vk_queue,
+		engine.vk_instance_buffer,
+		0,
+		slice.to_bytes(instance_data),
+	)
+	queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
 
 	//
 	// Run the graphics pipeline
@@ -247,7 +254,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		vk.CmdDrawIndexed(
 			commandBuffer = commandBuffer,
 			indexCount = mesh.index_count,
-			instanceCount = 1,
+			instanceCount = u32(len(instance_data)),
 			firstIndex = 0,
 			vertexOffset = 0,
 			firstInstance = 0,
@@ -269,14 +276,14 @@ engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
 		// command buffer.
 		//
 		waitSemaphoreCount   = 1,
-		pWaitSemaphores      = &engine.vk_present_complete_semas[engine.vk_frame_index],
+		pWaitSemaphores      = &engine.vk_present_complete_sema,
 		pWaitDstStageMask    = &vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
 
 		//
 		// The command buffers to execute
 		//
 		commandBufferCount   = 1,
-		pCommandBuffers      = &engine.vk_cmdbufs[engine.vk_frame_index],
+		pCommandBuffers      = &engine.vk_cmdbuf,
 
 		//
 		// These mutexs are locked for the duration of the submission/execution
@@ -286,12 +293,7 @@ engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
 		pSignalSemaphores    = &engine.vk_swapchain_semas[engine.vk_image_index],
 	}
 
-	result = vk.QueueSubmit(
-		engine.vk_queue,
-		1,
-		&submit_info,
-		engine.vk_draw_fences[engine.vk_frame_index],
-	)
+	result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, engine.vk_draw_fence)
 	ensure(result == .SUCCESS)
 
 	//
@@ -375,20 +377,8 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 			up = engine.camera.up,
 		)
 
-	corner := engine.models[CURRENT_MODEL].header.corner
-	dim := engine.models[CURRENT_MODEL].header.dim
-
-	world_from_model: matrix[4, 4]f32 = 1
-
-	model_from_vertex: matrix[4, 4]f32 =
-		linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) *
-		linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
-
 	return ShaderUniforms {
 		screen_from_world = screen_from_world,
-		world_from_model  = world_from_model,
-		model_from_vertex = model_from_vertex,
-		normal_matrix     = linalg.transpose(linalg.inverse(model_from_vertex)),
 
 		//
 		camera_position   = engine.camera.pos,
@@ -402,6 +392,43 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 		ambient_light     = 0.1,
 		flags             = engine.shader_flags,
 	}
-
 }
 
+engine_make_instance_data :: proc(engine: ^Engine) -> []Instance {
+	clear(engine.instance_data)
+
+	t := f32(glfw.GetTime() * 0.1)
+
+	for x in -10 ..< 10 do for y in -10 ..< 10 {
+
+		corner := engine.models[CURRENT_MODEL].header.corner
+		dim := engine.models[CURRENT_MODEL].header.dim
+
+		world_from_model := linalg.matrix4_translate_f32({f32(x) * 1.1, f32(y) * 1.1, 0})
+
+		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) * linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) * linalg.matrix4_rotate_f32((f32(y) / 100 + t) * math.PI, {0, 1, 0}) * linalg.matrix4_rotate_f32((f32(x) / 100 + t) * math.PI, {1, 0, 0})
+
+		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
+
+		append(engine.instance_data, Instance{world_from_model = world_from_model, model_from_vertex = model_from_vertex, normal_matrix = normal_matrix})
+	}
+
+	return engine.instance_data[:]
+}
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//

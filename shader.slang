@@ -20,9 +20,6 @@ enum Flags : uint {
 
 struct Uniforms {
     float4x4 screen_from_world;
-    float4x4 world_from_model;
-    float4x4 model_from_vertex;
-    float4x4 normal_matrix;
 
     float4   light_position;
     float4   light_color;
@@ -30,6 +27,14 @@ struct Uniforms {
     float    ambient_light;
     uint     flags;
 };
+
+struct Instance {
+    float4x4 world_from_model;
+    float4x4 model_from_vertex;
+    float4x4 normal_matrix;
+}
+
+StructuredBuffer<Instance> instance_data;
 
 // The buffers which contain our model/texture data
 ConstantBuffer<Uniforms> uniforms;
@@ -40,23 +45,26 @@ Sampler2D tex_emissive;
 Sampler2D tex_bump;
 Sampler2D tex_specular;
 
+
 [shader("vertex")]
 VertexOutput vertex(
-    Vertex input,
-    uint instanceID : SV_InstanceID
+    Vertex   ivertex,
+    uint instance_id: SV_InstanceID
 ) {
     VertexOutput output;
 
-    float4 vertex        = float4(input.pos, 1.0);
-    float4 vertex_model  = mul(uniforms.model_from_vertex, vertex);
-    float4 vertex_world  = mul(uniforms.world_from_model,  vertex_model);
+    Instance idata = instance_data[instance_id];
+
+    float4 vertex        = float4(ivertex.pos, 1.0);
+    float4 vertex_model  = mul(idata.model_from_vertex, vertex);
+    float4 vertex_world  = mul(idata.world_from_model,  vertex_model);
     float4 vertex_screen = mul(uniforms.screen_from_world, vertex_world);
 
     output.pos = vertex_screen;
 
-    output.normal = mul(float3x3(uniforms.normal_matrix), input.normal);
-    output.light_dir = uniforms.light_position.xyz - vertex_world.xyz;
-    output.texcoord = input.texcoord;
+    output.normal = mul(float3x3(idata.normal_matrix), ivertex.normal);
+    output.light_dir = normalize(uniforms.light_position.xyz - vertex_world.xyz);
+    output.texcoord = ivertex.texcoord;
 
     return output;
 }
