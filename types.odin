@@ -9,7 +9,7 @@ import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
-LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
+LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL, .bunny, .viking_room, .dark_lord, .cacodemon}
 PIPELINE :: Pipeline.shader
 
 MAX_DRAW_INDEXED_INDIRECT_COMMANDS :: len(ModelTag)

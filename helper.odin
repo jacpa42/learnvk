@@ -16,8 +16,6 @@ cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer, loc := #caller_location) {
 		flags = {.ONE_TIME_SUBMIT},
 	}
 
-	log.infof("Starting oneshot cmdbuffer {:x} {}", cmdbuf, loc)
-
 	result := vk.BeginCommandBuffer(cmdbuf, &begin_info)
 	ensure(result == .SUCCESS)
 }

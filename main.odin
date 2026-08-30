@@ -1,7 +1,6 @@
 package learnvk
 
 //
-// TODO: Figure out how to do instanced rendering
 // TODO: Figure out how to use an array of samplers
 //
 
@@ -39,7 +38,13 @@ main :: proc() {
 		defer trace.tracking_allocator_print_results(&track)
 
 		context.assertion_failure_proc = trace.assertion_failure_proc
+
 	}
+
+	g_logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
+	context.logger = g_logger
+	defer log.destroy_console_logger(context.logger)
+
 
 	//
 	// Init engine
@@ -78,10 +83,6 @@ main :: proc() {
 
 engine_init :: proc(engine: ^Engine) {
 	result: vk.Result
-
-	g_logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
-	context.logger = g_logger
-	defer log.destroy_console_logger(context.logger)
 
 	//
 	// Setup the default state to generate the uniforms
@@ -769,6 +770,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	// gpu arena for the data _after_ I create the buffers.
 	//
 
+	expected_num_allocations: vk.DeviceSize
 	model_arena_requirements := vk.MemoryRequirements {
 		size           = 0,
 		alignment      = 0,
@@ -823,6 +825,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			buffer_requirements: vk.MemoryRequirements
 			vk.GetBufferMemoryRequirements(engine.vk_device, buffer^, &buffer_requirements)
 
+			expected_num_allocations += 1
 			model_arena_requirements.size += size
 			model_arena_requirements.alignment = max(
 				model_arena_requirements.alignment,
@@ -837,6 +840,7 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	//
 	// Then initialize the arena for the vertex data
 	//
+	model_arena_requirements.size += expected_num_allocations * model_arena_requirements.alignment
 	model_arena_memory := gpu_malloc(
 		device = engine.vk_device,
 		alloc = engine.vk_alloc,
@@ -992,6 +996,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Initialize the mesh arena
 	//
+	expected_num_allocations: vk.DeviceSize
 	mesh_arena_requirements := vk.MemoryRequirements {
 		size           = 0,
 		alignment      = 0,
@@ -1020,6 +1025,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 		vk.GetImageMemoryRequirements(engine.vk_device, task.input.texture.image, &requirements)
 
 		// refine our requirements for the arena
+		expected_num_allocations += 1
 		mesh_arena_requirements.size += requirements.size
 		mesh_arena_requirements.alignment = max(mesh_arena_requirements.alignment, requirements.alignment)
 		mesh_arena_requirements.memoryTypeBits &= requirements.memoryTypeBits
@@ -1028,7 +1034,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Then allocate the mesh arena
 	//
-	mesh_arena_requirements.size += mesh_arena_requirements.alignment
+	mesh_arena_requirements.size += expected_num_allocations * mesh_arena_requirements.alignment
 	mesh_arena_memory := gpu_malloc(
 		device = engine.vk_device,
 		alloc = engine.vk_alloc,
@@ -2005,7 +2011,7 @@ engine_destroy :: proc(engine: ^Engine) {
 		delete(mesh_info)
 	}
 
-	vk.FreeMemory(engine.vk_device, engine.mesh_arena.memory, engine.vk_alloc)
+	gpu_arena_destroy(engine.vk_device, engine.mesh_arena, engine.vk_alloc)
 
 	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, engine.vk_alloc)
 	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, engine.vk_alloc)
@@ -2039,7 +2045,7 @@ engine_destroy :: proc(engine: ^Engine) {
 	vk.FreeMemory(engine.vk_device, engine.vk_uniform_buffer_memory, engine.vk_alloc)
 	vk.DestroyBuffer(engine.vk_device, engine.vk_uniform_buffer, engine.vk_alloc)
 
-	vk.FreeMemory(engine.vk_device, engine.model_arena.memory, engine.vk_alloc)
+	gpu_arena_destroy(engine.vk_device, engine.model_arena, engine.vk_alloc)
 
 	for model_buffers in engine.vk_model_buffer {
 		for buffer in model_buffers {

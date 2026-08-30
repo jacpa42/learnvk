@@ -1,5 +1,7 @@
 package learnvk
 
+import "core:fmt"
+import "core:log"
 import "core:mem"
 import vk "vendor:vulkan"
 
@@ -21,6 +23,8 @@ gpu_malloc :: proc(
 ) -> (
 	memory: GpuMemory,
 ) {
+	log.warnf("Allocating {}Mib of gpu memory", f32(requirements.size) / (1024 * 1024))
+
 	memory_type_index, ok := device_get_memory_type_index(requirements, desired_properties)
 	if !ok do return
 
@@ -47,7 +51,16 @@ gpu_arena_init :: proc(buffer: GpuMemory) -> GpuArena {
 	return GpuArena{gpu_memory = buffer, offset = 0}
 }
 
-gpu_arena_free_all :: gpu_arena_reset
+gpu_arena_destroy :: proc(device: vk.Device, arena: GpuArena, alloc: ^vk.AllocationCallbacks) {
+	log.infof(
+		"Used {}/{}={}%% of arena memory",
+		arena.offset,
+		arena.size,
+		f32(arena.offset) / f32(arena.size),
+	)
+	vk.FreeMemory(device, arena.memory, alloc)
+}
+
 gpu_arena_reset :: proc(a: ^GpuArena) {a.offset = 0}
 
 gpu_arena_alloc :: proc(
@@ -68,6 +81,7 @@ gpu_arena_alloc :: proc(
 
 	capacity := a.size - aligned_offset
 	if capacity < size {
+		log.errorf("{:x} alloc failed (need {} bytes)", rawptr(a), size - capacity)
 		ok = false
 		return
 	}
