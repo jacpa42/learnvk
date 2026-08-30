@@ -1,7 +1,6 @@
 package learnvk
 
 import "base:runtime"
-import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:path/filepath"
@@ -61,73 +60,6 @@ find_format :: proc(
 	return .UNDEFINED
 }
 
-engine_create_image :: proc "contextless" (
-	device: vk.Device,
-	#any_int width: u32,
-	#any_int height: u32,
-	format: vk.Format,
-	usage: vk.ImageUsageFlags,
-	desired_properties: vk.MemoryPropertyFlags,
-	alloc: ^vk.AllocationCallbacks,
-) -> (
-	image: vk.Image,
-	view: vk.ImageView,
-	memory: vk.DeviceMemory,
-) {
-	create_info := vk.ImageCreateInfo {
-		sType         = .IMAGE_CREATE_INFO,
-		imageType     = .D2,
-		format        = format,
-		extent        = {width, height, 1},
-		mipLevels     = 1,
-		arrayLayers   = 1,
-		samples       = {._1},
-		tiling        = .OPTIMAL,
-		usage         = usage,
-		sharingMode   = .EXCLUSIVE,
-		initialLayout = .UNDEFINED,
-	}
-
-	result := vk.CreateImage(device, &create_info, alloc, &image)
-	ensure_contextless(result == .SUCCESS)
-
-	//
-	// Allocate memory for the image
-	//
-	requirements: vk.MemoryRequirements
-	vk.GetImageMemoryRequirements(device, image, &requirements)
-
-	alloc_info := vk.MemoryAllocateInfo {
-		sType           = .MEMORY_ALLOCATE_INFO,
-		allocationSize  = requirements.size,
-		memoryTypeIndex = device_get_memory_type_index(requirements, desired_properties),
-	}
-
-	result = vk.AllocateMemory(device, &alloc_info, alloc, &memory)
-	ensure_contextless(result == .SUCCESS)
-
-	result = vk.BindImageMemory(
-		device = device,
-		image = image,
-		memory = memory,
-		memoryOffset = 0, // TODO: What is this about?
-	)
-	ensure_contextless(result == .SUCCESS)
-
-
-	view_create_info := vk.ImageViewCreateInfo {
-		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = image,
-		viewType = .D2,
-		format = format,
-		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-	}
-	result = vk.CreateImageView(device, &view_create_info, alloc, &view)
-	ensure_contextless(result == .SUCCESS)
-
-	return
-}
-
 engine_create_buffer :: proc(
 	device: vk.Device,
 	alloc: ^vk.AllocationCallbacks,
@@ -151,7 +83,8 @@ engine_create_buffer :: proc(
 	requirements: vk.MemoryRequirements
 	vk.GetBufferMemoryRequirements(device, buffer, &requirements)
 
-	memory_type_index := device_get_memory_type_index(requirements, desired_properties)
+	memory_type_index, ok := device_get_memory_type_index(requirements, desired_properties)
+	ensure_contextless(ok)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
@@ -181,22 +114,22 @@ device_get_memory_type_index :: proc "contextless" (
 	requirements: vk.MemoryRequirements,
 	desired_properties: vk.MemoryPropertyFlags,
 ) -> (
-	memory_type_index: u32,
+	type_index: u32,
+	ok: bool,
 ) {
 	properties := physical_device_memory_properties
+	compatible_bits := transmute(bit_set[MemoryTypeIndex;u32])(requirements.memoryTypeBits)
 
-	for ; memory_type_index < properties.memoryTypeCount; memory_type_index += 1 {
-		is_compatible := requirements.memoryTypeBits & (u32(1) << memory_type_index) > 0
-		has_desired_properties :=
-			(desired_properties <= properties.memoryTypes[memory_type_index].propertyFlags)
-
-		if is_compatible && has_desired_properties {
+	for index in compatible_bits {
+		if (desired_properties <= properties.memoryTypes[index].propertyFlags) {
+			type_index = u32(index)
+			ok = true
 			return
 		}
 	}
 
-	assert_contextless(false)
-	return 0
+	ok = false
+	return
 }
 
 //
@@ -535,23 +468,20 @@ LoadTaskData :: struct {
 	// output
 	//
 	output: struct #all_or_none {
-		width:    i32,
-		height:   i32,
-		channels: i32,
-		data:     []u8,
-		ok:       bool,
+		width:           i32,
+		height:          i32,
+		channels:        i32,
+		data_needs_free: bool,
+		data:            []u8,
+		ok:              bool,
 	},
 }
 
-eat_load_task :: proc(
-	device: vk.Device,
-	alloc: ^vk.AllocationCallbacks,
-	task_array: []LoadTaskData,
-) {
+eat_load_task :: proc(task_array: []LoadTaskData) {
 	for &t in task_array {
-		assert_contextless(t.input.texture_cpath != nil)
-		assert_contextless(t.input.desired_channels != 0)
-		assert_contextless(t.input.format != .UNDEFINED)
+		if t.input.texture_cpath == nil do continue
+		if t.input.desired_channels == 0 do continue
+		if t.input.format == .UNDEFINED do continue
 
 		//
 		// Load pixels into RAM
@@ -572,24 +502,13 @@ eat_load_task :: proc(
 
 		data_len := int(width) * int(height) * int(t.input.desired_channels)
 
-		t.input.texture^ = {
-			engine_create_image(
-				device = device,
-				alloc = alloc,
-				width = width,
-				height = height,
-				format = t.input.format,
-				usage = {.SAMPLED, .TRANSFER_DST},
-				desired_properties = {.DEVICE_LOCAL},
-			),
-		}
-
 		t.output = {
-			width    = width,
-			height   = height,
-			channels = channels,
-			data     = data[:data_len],
-			ok       = true,
+			width           = width,
+			height          = height,
+			channels        = channels,
+			data_needs_free = true,
+			data            = data[:data_len],
+			ok              = true,
 		}
 
 		t.output.ok = true
@@ -600,7 +519,7 @@ engine_define_texture_load_task :: proc(
 	load_tasks: ^[dynamic]LoadTaskData, // output,
 
 	// input
-	mesh_textures_ptr: ^[MaterialType]Texture,
+	mesh_textures: ^[MaterialType]Texture,
 	this_model: Model,
 	model_tag: ModelTag,
 	mesh: model.Mesh,
@@ -630,7 +549,7 @@ engine_define_texture_load_task :: proc(
 		task: LoadTaskData
 
 		task.input = {
-			&mesh_textures_ptr[material_type],
+			&mesh_textures[material_type],
 			get_texture_details(this_model, material, material_type) or_continue,
 		}
 

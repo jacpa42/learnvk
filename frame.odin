@@ -216,6 +216,14 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		pOffsets = &pOffsets,
 	)
 
+	// vk.CmdDrawIndexedIndirect(
+	// 	commandBuffer = commandBuffer, // : CommandBuffer,
+	// 	buffer = engine.vk_draw_indexed_indirect_buffer, // : Buffer,
+	// 	offset = 0, // : DeviceSize,
+	// 	drawCount = 1, // : u32,
+	// 	stride = size_of(DrawInstancesCommand), // : u32
+	// )
+
 	//
 	// Draw all our meshes
 	//

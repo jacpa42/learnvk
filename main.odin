@@ -23,7 +23,6 @@ import vk "vendor:vulkan"
 
 g_logger: runtime.Logger
 physical_device_features: vk.PhysicalDeviceFeatures
-physical_device_limits: vk.PhysicalDeviceLimits
 physical_device_properties: vk.PhysicalDeviceProperties
 physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties
 
@@ -675,6 +674,43 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	result: vk.Result
 
 	//
+	// Create the draw indexed indirect command buffer
+	//
+
+	{
+		size := vk.DeviceSize(MAX_DRAW_INDEXED_INDIRECT_COMMANDS * size_of(DrawInstancesCommand))
+		usage := vk.BufferUsageFlags{.INDIRECT_BUFFER}
+		desired_properties := vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT, .DEVICE_LOCAL}
+
+		engine.vk_draw_indexed_indirect_buffer, engine.vk_draw_indexed_indirect_buffer_memory =
+			engine_create_buffer(
+				engine.vk_device,
+				engine.vk_alloc,
+				size,
+				usage,
+				desired_properties,
+			)
+
+		//
+		// Map the uniform buffer so we don't need to remap it every frame
+		//
+		ptr: rawptr
+		result = vk.MapMemory(
+			engine.vk_device,
+			engine.vk_draw_indexed_indirect_buffer_memory,
+			offset = 0,
+			size = size_of(ShaderUniforms),
+			flags = {},
+			ppData = &ptr,
+		)
+		ensure(result == .SUCCESS)
+
+		engine.vk_draw_indexed_indirect_buffer_memory_mmaped = ([^]DrawInstancesCommand)(
+			ptr,
+		)[:MAX_DRAW_INDEXED_INDIRECT_COMMANDS]
+	}
+
+	//
 	// Create the uniform buffers
 	//
 	{
@@ -729,13 +765,20 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 
 
 	//
-	// Fill the vertex buffers with data
+	// Create the model buffers. Actual allocation happens later as I create the
+	// gpu arena for the data _after_ I create the buffers.
 	//
+
+	model_arena_requirements := vk.MemoryRequirements {
+		size           = 0,
+		alignment      = 0,
+		memoryTypeBits = max(u32),
+	}
+
 	for model_tag in engine.model_loaded {
 		m := engine.models[model_tag]
 
 		for buffer_tag in ModelBuffer {
-			memory_to_upload: []byte
 			size: vk.DeviceSize
 			usage: vk.BufferUsageFlags
 			desired_properties: vk.MemoryPropertyFlags
@@ -743,47 +786,108 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 			switch buffer_tag {
 
 			case .model_indices:
-				memory_to_upload = to_bytes(model.get_all_indices(m))
-				size = vk.DeviceSize(len(memory_to_upload))
+				size = vk.DeviceSize(slice.size(model.get_all_indices(m)))
 				usage = {.INDEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 
 			case .model_vertices:
-				memory_to_upload = to_bytes(model.get_vertices(m))
-				size = vk.DeviceSize(len(memory_to_upload))
+				size = vk.DeviceSize(slice.size(model.get_vertices(m)))
 				usage = {.VERTEX_BUFFER, .TRANSFER_DST}
 				desired_properties = {.DEVICE_LOCAL}
 			}
 
+
 			if size == 0 {
-				ensure(len(memory_to_upload) == 0)
 				log.warnf("Skipping {}.{}", model_tag, buffer_tag)
 				continue
 			}
 
-			log.infof(
-				"Uploading {}.{} ({} Mb)",
-				model_tag,
-				buffer_tag,
-				f32(slice.size(memory_to_upload)) * 1e-6,
-			)
-
 			//
 			// Create the buffer
 			//
-			assert(len(memory_to_upload) > 0)
-			assert(int(size) == slice.size(memory_to_upload))
-			assert(slice.size(memory_to_upload) <= STAGING_BUFFER_SIZE)
+			buffer := &engine.vk_model_buffer[model_tag][buffer_tag]
+			create_info := vk.BufferCreateInfo {
+				sType       = .BUFFER_CREATE_INFO,
+				size        = size,
+				usage       = usage,
+				sharingMode = .EXCLUSIVE,
+			}
 
-			engine.vk_model_buffer[model_tag][buffer_tag], engine.vk_vertex_buffers_memory[model_tag][buffer_tag] =
-				engine_create_buffer(
-					engine.vk_device,
-					engine.vk_alloc,
-					size,
-					usage,
-					desired_properties,
-				)
+			result = vk.CreateBuffer(engine.vk_device, &create_info, engine.vk_alloc, buffer)
+			ensure(result == .SUCCESS)
 
+			//
+			// Get the requirements for the memory so we can properly allocate
+			// our arena
+			//
+			buffer_requirements: vk.MemoryRequirements
+			vk.GetBufferMemoryRequirements(engine.vk_device, buffer^, &buffer_requirements)
+
+			model_arena_requirements.size += size
+			model_arena_requirements.alignment = max(
+				model_arena_requirements.alignment,
+				buffer_requirements.alignment,
+			)
+			model_arena_requirements.memoryTypeBits &= buffer_requirements.memoryTypeBits
+
+		}
+	}
+
+
+	//
+	// Then initialize the arena for the vertex data
+	//
+	model_arena_memory := gpu_malloc(
+		device = engine.vk_device,
+		alloc = engine.vk_alloc,
+		requirements = model_arena_requirements,
+		desired_properties = vk.MemoryPropertyFlags{.DEVICE_LOCAL},
+	)
+	engine.model_arena = gpu_arena_init(model_arena_memory)
+
+	ensure(model_arena_memory.size > 0)
+
+	//
+	// Add the memory transfers to the queue
+	//
+	for model_tag in engine.model_loaded {
+		m := engine.models[model_tag]
+
+		for buffer_tag in ModelBuffer {
+			data: []byte
+
+			switch buffer_tag {
+			case .model_indices:
+				data = to_bytes(model.get_all_indices(m))
+			case .model_vertices:
+				data = to_bytes(model.get_vertices(m))
+			}
+
+			//
+			// Allocate the memory in the arena and map it to the buffer
+			//
+			model_data_buffer := engine.vk_model_buffer[model_tag][buffer_tag]
+			buffer_requirements: vk.MemoryRequirements
+			vk.GetBufferMemoryRequirements(
+				engine.vk_device,
+				model_data_buffer,
+				&buffer_requirements,
+			)
+
+			device_memory, memory_offset, ok := gpu_arena_alloc(
+				&engine.model_arena,
+				buffer_requirements.size,
+				buffer_requirements.alignment,
+			)
+			ensure(ok)
+
+			result = vk.BindBufferMemory(
+				engine.vk_device,
+				model_data_buffer,
+				device_memory,
+				memory_offset,
+			)
+			ensure(result == .SUCCESS)
 
 			//
 			// The copy into our buffer. This involves submitting command via the
@@ -793,68 +897,69 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 				queue = &engine.transfer_queue,
 				device = engine.vk_device,
 				vk_queue = engine.vk_queue,
-				buffer = engine.vk_model_buffer[model_tag][buffer_tag],
-				initial_offset = 0,
-				data = memory_to_upload,
+				buffer = model_data_buffer,
+				buffer_offset = 0,
+				data = data,
 			)
 		}
 	}
 }
 
 engine_load_all_textures :: proc(engine: ^Engine) {
+	result: vk.Result
+
 	//
 	// Setup a single pixel fallback buffer
 	//
-	{
-		engine.fallback_texture = {
-			engine_create_image(
-				device = engine.vk_device,
-				alloc = engine.vk_alloc,
-				width = 1,
-				height = 1,
-				format = .R8G8B8A8_SNORM,
-				usage = {.SAMPLED, .TRANSFER_DST},
-				desired_properties = {.DEVICE_LOCAL},
-			),
-		}
-
-		pixel_data := []u8{0xff, 0xff, 0xff, 0xff}
-		ok := queue_append_whole_image(
-			&engine.transfer_queue,
-			engine.vk_device,
-			engine.vk_queue,
-			engine.fallback_texture.image,
-			{1, 1, 1},
-			pixel_data,
-		)
-		ensure(ok)
-
-		log.infof(
-			"fallback_texture <-> wxh(1x1) pixels({}) %#v",
-			pixel_data,
-			engine.fallback_texture,
-		)
-	}
+	fallback_pixel_data := []u8{0xff, 0xff, 0xff, 0xff}
+	log.infof(
+		"fallback_texture <-> wxh(1x1) pixels({}) %#v",
+		fallback_pixel_data,
+		engine.fallback_texture,
+	)
 
 	//
 	// Define all the texture load tasks
 	//
 	tasks := make([dynamic]LoadTaskData, 0, 64, context.temp_allocator)
+
+	append(
+		&tasks,
+		LoadTaskData {
+			input = {
+				texture = &engine.fallback_texture,
+				texture_cpath = nil,
+				desired_channels = 4,
+				format = .R8G8B8A8_SNORM,
+			},
+			//
+			// output
+			//
+			output = {
+				width = 1,
+				height = 1,
+				channels = 4,
+				data_needs_free = false,
+				data = fallback_pixel_data,
+				ok = true,
+			},
+		},
+	)
+
 	defer for t in tasks {
-		if t.output.data != nil {
+		if t.output.data_needs_free {
 			stb_image.image_free(raw_data(t.output.data))
 		}
 	}
 
 	for tag in engine.model_loaded {
-
 		meshes := model.get_meshes(engine.models[tag])
 		model := engine.models[tag]
 
-		engine.vk_mesh_images[tag] = make([][MaterialType]Texture, len(meshes))
+		engine.vk_mesh_textures[tag] = make([][MaterialType]Texture, len(meshes))
 
 		for mesh, mesh_index in meshes {
-			mesh_textures_ptr := &engine.vk_mesh_images[tag][mesh_index]
+			mesh_textures_ptr := &engine.vk_mesh_textures[tag][mesh_index]
 			engine_define_texture_load_task(&tasks, mesh_textures_ptr, model, tag, mesh)
 		}
 	}
@@ -869,10 +974,8 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	thread_index := 0
 	for num_tasks_consumed + chunk_size < len(tasks) && thread_index < len(threads) {
 		task_slice := tasks[num_tasks_consumed:num_tasks_consumed + chunk_size]
-		threads[thread_index] = thread.create_and_start_with_poly_data3(
-			arg1 = engine.vk_device,
-			arg2 = engine.vk_alloc,
-			arg3 = task_slice,
+		threads[thread_index] = thread.create_and_start_with_poly_data(
+			data = task_slice,
 			fn = eat_load_task,
 		)
 
@@ -883,22 +986,111 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 	//
 	// Eat the remainder on main thread
 	//
-	eat_load_task(engine.vk_device, engine.vk_alloc, tasks[num_tasks_consumed:])
+	eat_load_task(tasks[num_tasks_consumed:])
 	for t in threads[:thread_index] do thread.destroy(t)
+
+	//
+	// Initialize the mesh arena
+	//
+	mesh_arena_requirements := vk.MemoryRequirements {
+		size           = 0,
+		alignment      = 0,
+		memoryTypeBits = max(u32),
+	}
+
+	for task in tasks do if task.output.ok {
+		create_info := vk.ImageCreateInfo {
+			sType         = .IMAGE_CREATE_INFO,
+			imageType     = .D2,
+			format        = task.input.format,
+			extent        = {u32(task.output.width), u32(task.output.height), 1},
+			mipLevels     = 1,
+			arrayLayers   = 1,
+			samples       = {._1},
+			tiling        = .OPTIMAL,
+			usage         = {.SAMPLED, .TRANSFER_DST},
+			sharingMode   = .EXCLUSIVE,
+			initialLayout = .UNDEFINED,
+		}
+
+		result = vk.CreateImage(engine.vk_device, &create_info, engine.vk_alloc, &task.input.texture.image)
+		ensure(result == .SUCCESS)
+
+		requirements: vk.MemoryRequirements
+		vk.GetImageMemoryRequirements(engine.vk_device, task.input.texture.image, &requirements)
+
+		// refine our requirements for the arena
+		mesh_arena_requirements.size += requirements.size
+		mesh_arena_requirements.alignment = max(mesh_arena_requirements.alignment, requirements.alignment)
+		mesh_arena_requirements.memoryTypeBits &= requirements.memoryTypeBits
+	}
+
+	//
+	// Then allocate the mesh arena
+	//
+	mesh_arena_requirements.size += mesh_arena_requirements.alignment
+	mesh_arena_memory := gpu_malloc(
+		device = engine.vk_device,
+		alloc = engine.vk_alloc,
+		requirements = mesh_arena_requirements,
+		desired_properties = vk.MemoryPropertyFlags{.DEVICE_LOCAL},
+	)
+	engine.mesh_arena = gpu_arena_init(mesh_arena_memory)
+
+	ensure(mesh_arena_memory.size > 0)
+
+	//
+	// Add the upload task for each image
+	//
 
 	for task in tasks {
 		if task.output.ok {
 
-			switch queue_can_append_image(&engine.transfer_queue, len(task.output.data)) {
-			case .yes:
-			case .after_flush:
-				queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
-			case .buffer_too_small:
-				panic("buffer is too small to transfer image!")
-			}
+			// map the memory to the image
+			requirements: vk.MemoryRequirements
+			vk.GetImageMemoryRequirements(
+				engine.vk_device,
+				task.input.texture.image,
+				&requirements,
+			)
 
-			ok := queue_append_image(
+			memory, memory_offset, ok := gpu_arena_alloc(
+				&engine.mesh_arena,
+				requirements.size,
+				requirements.alignment,
+			)
+			ensure(ok)
+
+			result = vk.BindImageMemory(
+				device = engine.vk_device,
+				image = task.input.texture.image,
+				memory = memory,
+				memoryOffset = memory_offset,
+			)
+			ensure_contextless(result == .SUCCESS)
+
+			//
+			// we need to create the view *after* we bind the memory!
+			//
+			view_create_info := vk.ImageViewCreateInfo {
+				sType = .IMAGE_VIEW_CREATE_INFO,
+				image = task.input.texture.image,
+				viewType = .D2,
+				format = task.input.format,
+				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+			}
+			result = vk.CreateImageView(
+				engine.vk_device,
+				&view_create_info,
+				engine.vk_alloc,
+				&task.input.texture.view,
+			)
+			ensure(result == .SUCCESS)
+
+			ok = queue_append_whole_image(
 				&engine.transfer_queue,
+				engine.vk_device,
+				engine.vk_queue,
 				task.input.texture.image,
 				{u32(task.output.width), u32(task.output.height), 1},
 				task.output.data,
@@ -909,6 +1101,7 @@ engine_load_all_textures :: proc(engine: ^Engine) {
 			log.warnf("Didn't succeed in the task load for \"{}\"", task.input.texture_cpath)
 		}
 	}
+
 }
 
 engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
@@ -1085,7 +1278,7 @@ engine_configure_descriptor_set :: proc(
 
 			image_info = vk.DescriptorImageInfo {
 				sampler     = engine.vk_image_sampler[mtype],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
+				imageView   = engine.vk_mesh_textures[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1107,7 +1300,7 @@ engine_configure_descriptor_set :: proc(
 
 			image_info = vk.DescriptorImageInfo {
 				sampler     = engine.vk_image_sampler[mtype],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
+				imageView   = engine.vk_mesh_textures[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1129,7 +1322,7 @@ engine_configure_descriptor_set :: proc(
 
 			image_info = vk.DescriptorImageInfo {
 				sampler     = engine.vk_image_sampler[mtype],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
+				imageView   = engine.vk_mesh_textures[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1151,7 +1344,7 @@ engine_configure_descriptor_set :: proc(
 
 			image_info = vk.DescriptorImageInfo {
 				sampler     = engine.vk_image_sampler[mtype],
-				imageView   = engine.vk_mesh_images[model_tag][mesh_index][mtype].view,
+				imageView   = engine.vk_mesh_textures[model_tag][mesh_index][mtype].view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 
@@ -1710,7 +1903,8 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	memory_requirements: vk.MemoryRequirements
 	vk.GetImageMemoryRequirements(engine.vk_device, engine.vk_depth_image, &memory_requirements)
 
-	memory_type_index := device_get_memory_type_index(memory_requirements, {.DEVICE_LOCAL})
+	memory_type_index, ok := device_get_memory_type_index(memory_requirements, {.DEVICE_LOCAL})
+	ensure_contextless(ok)
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
@@ -1807,20 +2001,20 @@ engine_destroy :: proc(engine: ^Engine) {
 		vk.DestroySampler(engine.vk_device, sampler, engine.vk_alloc)
 	}
 
-	vk.FreeMemory(engine.vk_device, engine.fallback_texture.memory, engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, engine.vk_alloc)
-
 	for mesh_info in engine.model_mesh_info {
 		delete(mesh_info)
 	}
 
-	for image_list in engine.vk_mesh_images {
-		defer delete(image_list)
+	vk.FreeMemory(engine.vk_device, engine.mesh_arena.memory, engine.vk_alloc)
 
-		for image_by_material in image_list {
+	vk.DestroyImageView(engine.vk_device, engine.fallback_texture.view, engine.vk_alloc)
+	vk.DestroyImage(engine.vk_device, engine.fallback_texture.image, engine.vk_alloc)
+
+	for texture_list in engine.vk_mesh_textures {
+		defer delete(texture_list)
+
+		for image_by_material in texture_list {
 			for image in image_by_material {
-				vk.FreeMemory(engine.vk_device, image.memory, engine.vk_alloc)
 				vk.DestroyImageView(engine.vk_device, image.view, engine.vk_alloc)
 				vk.DestroyImage(engine.vk_device, image.image, engine.vk_alloc)
 			}
@@ -1835,17 +2029,17 @@ engine_destroy :: proc(engine: ^Engine) {
 
 	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, engine.vk_alloc)
 
+
+	vk.FreeMemory(engine.vk_device, engine.vk_draw_indexed_indirect_buffer_memory, engine.vk_alloc)
+	vk.DestroyBuffer(engine.vk_device, engine.vk_draw_indexed_indirect_buffer, engine.vk_alloc)
+
 	vk.FreeMemory(engine.vk_device, engine.vk_instance_buffer_memory, engine.vk_alloc)
 	vk.DestroyBuffer(engine.vk_device, engine.vk_instance_buffer, engine.vk_alloc)
 
 	vk.FreeMemory(engine.vk_device, engine.vk_uniform_buffer_memory, engine.vk_alloc)
 	vk.DestroyBuffer(engine.vk_device, engine.vk_uniform_buffer, engine.vk_alloc)
 
-	for buffer_mem_slice in engine.vk_vertex_buffers_memory {
-		for mem in buffer_mem_slice {
-			vk.FreeMemory(engine.vk_device, mem, engine.vk_alloc)
-		}
-	}
+	vk.FreeMemory(engine.vk_device, engine.model_arena.memory, engine.vk_alloc)
 
 	for model_buffers in engine.vk_model_buffer {
 		for buffer in model_buffers {

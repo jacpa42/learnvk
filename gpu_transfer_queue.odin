@@ -1,5 +1,6 @@
 package learnvk
 
+import "core:fmt"
 import "core:log"
 import "core:mem"
 import "core:slice"
@@ -69,12 +70,12 @@ queue_append_whole_buffer :: proc(
 
 	// buffer data
 	buffer: vk.Buffer,
-	initial_offset: vk.DeviceSize,
+	buffer_offset: vk.DeviceSize,
 	data: []byte,
 	loc := #caller_location,
 ) {
 	written := 0
-	offset := int(initial_offset)
+	offset := int(buffer_offset)
 
 	for written < len(data) {
 		write_size, needs_flush := queue_append_buffer(queue, buffer, offset, data[written:], loc)
