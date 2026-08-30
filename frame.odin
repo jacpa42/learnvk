@@ -382,12 +382,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 
 		//
 		camera_position   = engine.camera.pos,
-		light_position    = 5 * [4]f32 {
-				f32(math.sin(glfw.GetTime() * 0.5)),
-				f32(math.cos(glfw.GetTime() * 0.5)),
-				0,
-				0,
-			},
+		light_position    = {0, 0, 100, 0},
 		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
 		ambient_light     = 0.1,
 		flags             = engine.shader_flags,

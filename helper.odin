@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:path/filepath"
@@ -187,8 +188,7 @@ device_get_memory_type_index :: proc "contextless" (
 	for ; memory_type_index < properties.memoryTypeCount; memory_type_index += 1 {
 		is_compatible := requirements.memoryTypeBits & (u32(1) << memory_type_index) > 0
 		has_desired_properties :=
-			(desired_properties & properties.memoryTypes[memory_type_index].propertyFlags) ==
-			desired_properties
+			(desired_properties <= properties.memoryTypes[memory_type_index].propertyFlags)
 
 		if is_compatible && has_desired_properties {
 			return

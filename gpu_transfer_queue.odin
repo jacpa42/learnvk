@@ -83,8 +83,6 @@ queue_append_whole_buffer :: proc(
 		written += write_size
 		offset += write_size
 	}
-
-	log.infof("Appended whole buffer to queue 0x{:x}", buffer)
 }
 
 queue_append_buffer :: proc(
@@ -348,7 +346,7 @@ queue_init :: proc(
 		alloc,
 		transfer_buf_size,
 		{.TRANSFER_SRC},
-		{.HOST_VISIBLE, .HOST_COHERENT},
+		{.HOST_VISIBLE, .HOST_COHERENT, .DEVICE_LOCAL},
 	)
 
 	data: rawptr
