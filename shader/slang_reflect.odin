@@ -36,6 +36,7 @@ ShaderParameter :: struct {
 ShaderParameterType :: struct {
 	elementType: JsonObject,
 	resultType:  JsonObject,
+	combined:    bool,
 	baseShape:   enum {
 		none,
 		texture2D,
@@ -191,12 +192,13 @@ slang_type_parse :: proc(obj: JsonObject) -> (o: SlangType) {
 slang_type_parse_struct :: proc(
 	v: JsonObject,
 	allocator := context.temp_allocator,
+	loc := #caller_location,
 ) -> (
 	o: SlangStruct,
 ) {
 	context.allocator = mem.nil_allocator()
 
-	assert(v["kind"].(json.String) == "struct")
+	assert(v["kind"].(json.String) == "struct", loc = loc)
 
 	//
 	// name

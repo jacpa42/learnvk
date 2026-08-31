@@ -549,11 +549,19 @@ DrawInstancesCommand :: struct {
 	// whatever data we want here
 }
 
-Instance :: struct #all_or_none #align (16) {
+InstanceTransforms :: struct #all_or_none #align (16) {
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
 	normal_matrix:     matrix[4, 4]f32,
 }
+
+InstanceTextures :: struct #all_or_none #align (16) {
+	diffuse:  i32,
+	emissive: i32,
+	bump:     i32,
+	specular: i32,
+}
+
 
 ModelBuffer :: enum {
 	// model data buffers
@@ -574,122 +582,119 @@ Engine :: struct {
 	//
 	// Windowing stuff
 	//
-	window:                                        glfw.WindowHandle,
-	stop_rendering:                                bool,
-	framebuffer_resized:                           bool,
-	model_loaded:                                  bit_set[ModelTag],
-	model_data_on_gpu:                             bit_set[ModelTag],
-	model_mesh_info:                               [ModelTag][]struct {
+	window:                                 glfw.WindowHandle,
+	stop_rendering:                         bool,
+	framebuffer_resized:                    bool,
+	model_loaded:                           bit_set[ModelTag],
+	model_data_on_gpu:                      bit_set[ModelTag],
+	model_mesh_info:                        [ModelTag][]struct {
 		index_start: u32,
 		index_count: u32,
 		name:        [dynamic; MAX_MESH_NAME_LEN]byte,
 	},
-	models:                                        [ModelTag]Model,
-	instance_data:                                 ^[dynamic; MAX_INSTANCES]Instance,
+	models:                                 [ModelTag]Model,
+	instance_data:                          ^[dynamic; MAX_INSTANCES]InstanceTransforms,
 
 	//
 	// Vulkan stuff
 	//
-	vk_alloc:                                      ^vk.AllocationCallbacks,
-	vk_messenger:                                  vk.DebugUtilsMessengerEXT,
-	vk_instance:                                   vk.Instance,
+	vk_alloc:                               ^vk.AllocationCallbacks,
+	vk_messenger:                           vk.DebugUtilsMessengerEXT,
+	vk_instance:                            vk.Instance,
 
 	//
 	// Stuff for eye position
 	//
-	actions:                                       bit_set[Action],
-	disable_rotate:                                bool,
-	model_rotation:                                f32,
-	delta_time:                                    f32,
-	camera:                                        Camera,
-	shader_flags:                                  bit_set[UniformFlag;u32],
+	actions:                                bit_set[Action],
+	disable_rotate:                         bool,
+	model_rotation:                         f32,
+	delta_time:                             f32,
+	camera:                                 Camera,
+	shader_flags:                           bit_set[UniformFlag;u32],
 
 	//
 	// Physical and Logical device
 	//
-	vk_physical_device:                            vk.PhysicalDevice,
-	vk_physical_device_required_extensions:        [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
-	vk_device:                                     vk.Device,
-	vk_queue:                                      vk.Queue,
-	vk_queue_index:                                u32,
-	vk_surface:                                    vk.SurfaceKHR,
+	vk_physical_device:                     vk.PhysicalDevice,
+	vk_physical_device_required_extensions: [dynamic; MAX_PHYSICAL_DEVICE_EXTENSIONS]cstring,
+	vk_device:                              vk.Device,
+	vk_queue:                               vk.Queue,
+	vk_queue_index:                         u32,
+	vk_surface:                             vk.SurfaceKHR,
 
 	//
 	// Swapchain
 	//
-	vk_min_image_count:                            u32,
-	vk_swapchain:                                  vk.SwapchainKHR,
-	vk_swapchain_surface_format:                   vk.SurfaceFormatKHR,
-	vk_swapchain_extent:                           vk.Extent2D,
-	vk_image_index:                                u32,
-	vk_swapchain_images:                           [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
-	vk_swapchain_image_views:                      [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
+	vk_min_image_count:                     u32,
+	vk_swapchain:                           vk.SwapchainKHR,
+	vk_swapchain_surface_format:            vk.SurfaceFormatKHR,
+	vk_swapchain_extent:                    vk.Extent2D,
+	vk_image_index:                         u32,
+	vk_swapchain_images:                    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
+	vk_swapchain_image_views:               [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
 
 	//
 	// Descriptor sets
 	//
-	vk_descriptor_pool:                            vk.DescriptorPool,
-	vk_set_layout:                                 vk.DescriptorSetLayout,
+	vk_descriptor_pool:                     vk.DescriptorPool,
+	vk_set_layout:                          vk.DescriptorSetLayout,
 	// one per mesh
-	vk_descriptor_sets:                            [ModelTag][]vk.DescriptorSet,
+	vk_descriptor_sets:                     [ModelTag][]vk.DescriptorSet,
 
 	//
 	// Buffers which change a bunch
 	//
-	transfer_queue:                                GpuTransferQueue,
-	vk_instance_buffer:                            vk.Buffer,
-	vk_instance_buffer_memory:                     vk.DeviceMemory,
-	vk_draw_indexed_indirect_buffer:               vk.Buffer,
-	vk_draw_indexed_indirect_buffer_memory:        vk.DeviceMemory,
-	vk_draw_indexed_indirect_buffer_memory_mmaped: []DrawInstancesCommand,
-	vk_uniform_buffer:                             vk.Buffer,
-	vk_uniform_buffer_memory:                      vk.DeviceMemory,
-	vk_uniform_buffer_mmapped:                     rawptr,
+	frame_arena:                            MappedGpuArena,
+	vk_instance_transforms:                 []InstanceTransforms, // slice of frame arena mmap
+	vk_instance_textures:                   []InstanceTextures, // slice of frame arena mmap
+	vk_draw_indexed_indirect:               []DrawInstancesCommand, // slice of frame arena mmap
+	uniforms:                               []ShaderUniforms, // slice of frame arena mmap
 
 	//
 	// Model data
 	//
-	model_arena:                                   GpuArena,
-	vk_model_buffer:                               [ModelTag][ModelBuffer]vk.Buffer,
+	transfer_queue:                         GpuTransferQueue,
+	model_arena:                            GpuArena,
+	vk_model_buffer:                        [ModelTag][ModelBuffer]vk.Buffer,
 
 	//
 	// mesh textures
 	//
-	mesh_arena:                                    GpuArena,
-	fallback_texture:                              Texture,
+	mesh_arena:                             GpuArena,
+	fallback_texture:                       Texture,
 	// per model x per mesh
-	vk_mesh_textures:                              [ModelTag][][MaterialType]Texture,
+	vk_mesh_textures:                       [ModelTag][][MaterialType]Texture,
 
 	// one sampler for all images
-	vk_image_sampler:                              [MaterialType]vk.Sampler,
+	vk_image_sampler:                       [MaterialType]vk.Sampler,
 
 	//
 	// Depth image
 	//
-	vk_depth_image_format:                         vk.Format,
-	vk_depth_image:                                vk.Image,
-	vk_depth_image_view:                           vk.ImageView,
-	vk_depth_image_memory:                         vk.DeviceMemory,
+	vk_depth_image_format:                  vk.Format,
+	vk_depth_image:                         vk.Image,
+	vk_depth_image_view:                    vk.ImageView,
+	vk_depth_image_memory:                  vk.DeviceMemory,
 
 	//
 	// Pipeline
 	//
-	vk_pipeline_cache:                             vk.PipelineCache,
-	vk_render_pipeline:                            vk.Pipeline,
-	vk_viewport:                                   vk.Viewport,
-	vk_scissor:                                    vk.Rect2D,
-	vk_color_attachment:                           vk.PipelineColorBlendAttachmentState,
-	vk_pipeline_dynamic_state:                     [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
-	vk_pipeline_shader:                            vk.ShaderModule,
-	vk_pipeline_layout:                            vk.PipelineLayout,
+	vk_pipeline_cache:                      vk.PipelineCache,
+	vk_render_pipeline:                     vk.Pipeline,
+	vk_viewport:                            vk.Viewport,
+	vk_scissor:                             vk.Rect2D,
+	vk_color_attachment:                    vk.PipelineColorBlendAttachmentState,
+	vk_pipeline_dynamic_state:              [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
+	vk_pipeline_shader:                     vk.ShaderModule,
+	vk_pipeline_layout:                     vk.PipelineLayout,
 
 	//
 	// Command buffer
 	//
-	vk_cmdpool:                                    vk.CommandPool,
-	vk_cmdbuf:                                     vk.CommandBuffer,
-	vk_swapchain_semas:                            [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
-	vk_present_complete_sema:                      vk.Semaphore,
-	vk_draw_fence:                                 vk.Fence,
+	vk_cmdpool:                             vk.CommandPool,
+	vk_cmdbuf:                              vk.CommandBuffer,
+	vk_swapchain_semas:                     [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
+	vk_present_complete_sema:               vk.Semaphore,
+	vk_draw_fence:                          vk.Fence,
 }
 

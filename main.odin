@@ -2,6 +2,7 @@ package learnvk
 
 //
 // TODO: Figure out how to use an array of samplers
+// /home/jacob/Projects/game_programming/learnvk/main.odin:681:11
 //
 
 import "base:runtime"
@@ -675,6 +676,11 @@ engine_init_buffer_and_images :: proc(engine: ^Engine) {
 	result: vk.Result
 
 	//
+	// Create the per-frame mmapped arena
+	//
+	// TODO: TODDODODOODDD
+
+	//
 	// Create the draw indexed indirect command buffer
 	//
 
@@ -1118,21 +1124,22 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	//
 	assert(card(engine.model_data_on_gpu) > 0)
 	total_meshes: u32
-	for tag in engine.model_data_on_gpu {
-		total_meshes += u32(len(engine.model_mesh_info[tag]))
-	}
+	for tag in engine.model_data_on_gpu do total_meshes += u32(len(engine.model_mesh_info[tag]))
+
 
 	maxSets: u32
-	pool_sizes := [3]vk.DescriptorPoolSize {
-		{type = .UNIFORM_BUFFER, descriptorCount = 0},
-		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 0},
-		{type = .STORAGE_BUFFER, descriptorCount = 0},
-	}
-	for layout in SHADER_PIPELINE_SET_LAYOUTS {
-		if layout.descriptorType == .UNIFORM_BUFFER do pool_sizes[0].descriptorCount += total_meshes
-		if layout.descriptorType == .COMBINED_IMAGE_SAMPLER do pool_sizes[1].descriptorCount += total_meshes
-		if layout.descriptorType == .STORAGE_BUFFER do pool_sizes[2].descriptorCount += total_meshes
-
+	pool_sizes := make(
+		[dynamic]vk.DescriptorPoolSize,
+		0,
+		len(vk.DescriptorType),
+		context.temp_allocator,
+	)
+	outer: for layout in SHADER_PIPELINE_SET_LAYOUTS {
+		for &v in pool_sizes do if v.type == layout.descriptorType {
+			v.descriptorCount += layout.descriptorCount * total_meshes
+			continue outer
+		}
+		append(&pool_sizes, vk.DescriptorPoolSize{layout.descriptorType, total_meshes})
 		maxSets += total_meshes
 	}
 
@@ -1140,8 +1147,8 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		flags         = {.FREE_DESCRIPTOR_SET},
 		maxSets       = maxSets,
-		poolSizeCount = len(pool_sizes),
-		pPoolSizes    = raw_data(&pool_sizes),
+		poolSizeCount = u32(len(pool_sizes)),
+		pPoolSizes    = raw_data(pool_sizes),
 	}
 
 	result = vk.CreateDescriptorPool(
@@ -1258,7 +1265,7 @@ engine_configure_descriptor_set :: proc(
 
 		switch binding_tag {
 
-		case .instance_data:
+		case .instance_transforms:
 			// TODO: Maybe we want a descriptor set per FRAME_IN_FLIGHT?
 			buffer_info = vk.DescriptorBufferInfo {
 				buffer = engine.vk_instance_buffer,

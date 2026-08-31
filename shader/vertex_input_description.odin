@@ -309,15 +309,23 @@ shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.Sh
 }
 
 shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulkan.DescriptorType {
+	fmt.eprintfln("%#v", shader_param)
+
 	switch shader_param.type.kind {
 	case .constantBuffer:
-		return .UNIFORM_BUFFER
+		if shader_param.type.elementType["kind"].(json.String) == "struct" {
+			return .UNIFORM_BUFFER
+		} else if shader_param.type.elementType["baseShape"].(json.String) == "texture2D" {
+			return .COMBINED_IMAGE_SAMPLER
+		}
 	case .resource:
 		switch shader_param.type.baseShape {
 		case .none:
 			assert(false)
 		case .texture2D:
-			return .COMBINED_IMAGE_SAMPLER
+			if shader_param.type.combined do return .COMBINED_IMAGE_SAMPLER
+			if !shader_param.type.combined do return .SAMPLER
+
 		case .structuredBuffer:
 			return .STORAGE_BUFFER
 		}
@@ -467,7 +475,12 @@ copy_shader_param_def_in_odin :: proc(
 	param_elem_type: SlangStruct
 	switch param.type.kind {
 	case .constantBuffer:
-		param_elem_type = slang_type_parse_struct(param.type.elementType)
+		if param.type.elementType["kind"].(json.String) == "struct" {
+			param_elem_type = slang_type_parse_struct(param.type.elementType)
+		} else {
+			log.warnf("Skipping shader param def :: {}", param.name)
+			return
+		}
 
 	case .resource:
 		return // dont care

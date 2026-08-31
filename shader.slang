@@ -9,14 +9,8 @@ struct VertexOutput {
     float3 normal;
     float3 light_dir;
     float2 texcoord;
+    InstanceTextures textures;
 };
-
-enum Flags : uint {
-	enable_diffuse  = 1,
-	enable_emissive = 2,
-	enable_bump     = 4,
-	enable_specular = 8,
-}
 
 struct Uniforms {
     float4x4 screen_from_world;
@@ -25,26 +19,28 @@ struct Uniforms {
     float4   light_color;
     float4   camera_position;
     float    ambient_light;
-    uint     flags;
 };
 
-struct Instance {
+struct InstanceTransforms {
     float4x4 world_from_model;
     float4x4 model_from_vertex;
     float4x4 normal_matrix;
+    uint     flags;
 }
 
-StructuredBuffer<Instance> instance_data;
+// -1 means nil
+struct InstanceTextures {
+    int diffuse_id;
+    int emissive_id;
+    int bump_id;
+    int specular_id;
+}
 
-// The buffers which contain our model/texture data
 ConstantBuffer<Uniforms> uniforms;
 
-// All the material textures we can bind for our fragment shader
-Sampler2D tex_diffuse;
-Sampler2D tex_emissive;
-Sampler2D tex_bump;
-Sampler2D tex_specular;
-
+StructuredBuffer<InstanceTransforms> instance_transforms;
+StructuredBuffer<InstanceTextures>   instance_textures;
+Sampler2D                            textures[];
 
 [shader("vertex")]
 VertexOutput vertex(
@@ -53,18 +49,20 @@ VertexOutput vertex(
 ) {
     VertexOutput output;
 
-    Instance idata = instance_data[instance_id];
+    InstanceTransforms itransforms = instance_transforms[instance_id];
+    InstanceTextures   itextures   = instance_textures[instance_id];
 
     float4 vertex        = float4(ivertex.pos, 1.0);
-    float4 vertex_model  = mul(idata.model_from_vertex, vertex);
-    float4 vertex_world  = mul(idata.world_from_model,  vertex_model);
+    float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
+    float4 vertex_world  = mul(itransforms.world_from_model,  vertex_model);
     float4 vertex_screen = mul(uniforms.screen_from_world, vertex_world);
 
     output.pos = vertex_screen;
 
-    output.normal = mul(float3x3(idata.normal_matrix), ivertex.normal);
+    output.normal    = mul(float3x3(itransforms.normal_matrix), ivertex.normal);
     output.light_dir = normalize(uniforms.light_position.xyz - vertex_world.xyz);
-    output.texcoord = ivertex.texcoord;
+    output.texcoord  = ivertex.texcoord;
+    output.textures  = itextures;
 
     return output;
 }
@@ -83,8 +81,8 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     //
     // diffuse
     //
-    if ((uniforms.flags & 1) > 0) {
-        col *= tex_diffuse.Sample(input.texcoord);
+    if (input.textures.diffuse_id >= 0) {
+        col *= textures[input.textures.diffuse_id].Sample(input.texcoord);
     }
 
     return col;
