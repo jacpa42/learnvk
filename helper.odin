@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:path/filepath"
@@ -9,6 +10,27 @@ import "model"
 import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
+
+@(require_results)
+engine_create_buffer :: proc(
+	device: vk.Device,
+	alloc: ^vk.AllocationCallbacks,
+	#any_int size: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+) -> (
+	buffer: vk.Buffer,
+	result: vk.Result,
+) {
+	info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = size,
+		usage = usage,
+	}
+
+	result = vk.CreateBuffer(device, &info, alloc, &buffer)
+	return
+}
+
 
 cmd_oneshot_begin :: proc(cmdbuf: vk.CommandBuffer, loc := #caller_location) {
 	begin_info := vk.CommandBufferBeginInfo {
@@ -58,52 +80,6 @@ find_format :: proc(
 	return .UNDEFINED
 }
 
-engine_create_buffer :: proc(
-	device: vk.Device,
-	alloc: ^vk.AllocationCallbacks,
-	size: vk.DeviceSize,
-	usage: vk.BufferUsageFlags,
-	desired_properties: vk.MemoryPropertyFlags,
-) -> (
-	buffer: vk.Buffer,
-	memory: vk.DeviceMemory,
-) {
-	create_info := vk.BufferCreateInfo {
-		sType       = .BUFFER_CREATE_INFO,
-		size        = size,
-		usage       = usage,
-		sharingMode = .EXCLUSIVE,
-	}
-
-	result := vk.CreateBuffer(device, &create_info, alloc, &buffer)
-	ensure(result == .SUCCESS)
-
-	requirements: vk.MemoryRequirements
-	vk.GetBufferMemoryRequirements(device, buffer, &requirements)
-
-	memory_type_index, ok := device_get_memory_type_index(requirements, desired_properties)
-	ensure_contextless(ok)
-
-	alloc_info := vk.MemoryAllocateInfo {
-		sType           = .MEMORY_ALLOCATE_INFO,
-		allocationSize  = requirements.size,
-		memoryTypeIndex = memory_type_index,
-	}
-
-	result = vk.AllocateMemory(device, &alloc_info, alloc, &memory)
-	ensure(result == .SUCCESS)
-
-	result = vk.BindBufferMemory(
-		device,
-		buffer = buffer,
-		memory = memory,
-		memoryOffset = 0, // TODO: What is this about?
-	)
-	ensure(result == .SUCCESS)
-
-	return
-}
-
 //
 // Given the properties of the currently bound physical device, find the memory
 // type we will use for the buffer given the memory requirements.
@@ -113,7 +89,7 @@ device_get_memory_type_index :: proc "contextless" (
 	desired_properties: vk.MemoryPropertyFlags,
 ) -> (
 	type_index: u32,
-	ok: bool,
+	result: vk.Result,
 ) {
 	properties := physical_device_memory_properties
 	compatible_bits := transmute(bit_set[MemoryTypeIndex;u32])(requirements.memoryTypeBits)
@@ -121,12 +97,12 @@ device_get_memory_type_index :: proc "contextless" (
 	for index in compatible_bits {
 		if (desired_properties <= properties.memoryTypes[index].propertyFlags) {
 			type_index = u32(index)
-			ok = true
+			result = .SUCCESS
 			return
 		}
 	}
 
-	ok = false
+	result = vk.Result.ERROR_NOT_PERMITTED
 	return
 }
 
@@ -263,9 +239,9 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
 
 	if key == glfw.KEY_R && pressed do engine.disable_rotate = !engine.disable_rotate
 
-	if key == glfw.KEY_Q && pressed && card(engine.model_data_on_gpu) > 0 {
+	if key == glfw.KEY_Q && pressed && card(engine.model_loaded) > 0 {
         CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1) % NUM_MODELS)
-        for (CURRENT_MODEL not_in engine.model_data_on_gpu) {
+        for (CURRENT_MODEL not_in engine.model_loaded) {
             CURRENT_MODEL = ModelTag((int(CURRENT_MODEL)+1) % NUM_MODELS)
         }
     }
@@ -553,4 +529,77 @@ engine_define_texture_load_task :: proc(
 
 		append(load_tasks, task)
 	}
+}
+
+
+//
+// Gets the requirements for a buffer without actually creating one
+//
+get_memory_requirements_buffer :: proc(
+	device: vk.Device,
+	#any_int size: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+) -> vk.MemoryRequirements {
+
+	create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = size,
+		usage = usage,
+	}
+
+	dbmr := vk.DeviceBufferMemoryRequirements {
+		sType       = .DEVICE_BUFFER_MEMORY_REQUIREMENTS,
+		pCreateInfo = &create_info,
+	}
+
+	req2: vk.MemoryRequirements2
+	vk.GetDeviceBufferMemoryRequirements(device, &dbmr, &req2)
+
+	return req2.memoryRequirements
+}
+
+//
+// Gets the requirements for an image without actually creating one
+//
+get_memory_requirements_image :: proc(
+	device: vk.Device,
+	format: vk.Format,
+	usage: vk.ImageUsageFlags,
+
+	//
+	width: u32,
+	height: u32,
+	depth: u32 = 1,
+	image_type := vk.ImageType.D2,
+
+	//
+	mipLevels: u32 = 1,
+	arrayLayers: u32 = 1,
+
+	//
+	samples := vk.SampleCountFlags{._1},
+	tiling := vk.ImageTiling.OPTIMAL,
+) -> vk.MemoryRequirements {
+
+	create_info := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		imageType   = image_type,
+		format      = format,
+		extent      = {width, height, depth},
+		mipLevels   = mipLevels,
+		arrayLayers = arrayLayers,
+		samples     = samples,
+		tiling      = tiling,
+		usage       = usage,
+	}
+
+	dbmr := vk.DeviceImageMemoryRequirements {
+		sType       = .DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+		pCreateInfo = &create_info,
+	}
+
+	req2: vk.MemoryRequirements2
+	vk.GetDeviceImageMemoryRequirements(device, &dbmr, &req2)
+
+	return req2.memoryRequirements
 }

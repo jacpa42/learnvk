@@ -58,8 +58,8 @@ get_meshes :: proc {
 get_meshes_obj :: proc(obj: Obj) -> []Mesh {
 	return obj.meshes[:]
 }
-get_meshes_bob :: proc(bob: Bob) -> []Mesh {
-	return get_slice_data(bob.header.meshes, bob.data)
+get_meshes_bob :: proc(bob: Bob, loc := #caller_location) -> []Mesh {
+	return get_slice_data(bob.header.meshes, bob.data, loc = loc)
 }
 
 get_mesh_name :: proc {
@@ -112,16 +112,23 @@ get_all_indices_bob :: proc(bob: Bob) -> []u32 {
 }
 
 get_mesh_indices :: proc {
-	get_mesh_indices_obj,
-	get_mesh_indices_bob,
+	obj_get_mesh_indices,
+	bob_get_mesh_indices,
+	obj_get_mesh_indices_index,
+	bob_get_mesh_indices_index,
 }
-get_mesh_indices_obj :: proc(obj: Obj, mesh: Mesh) -> []u32 {
+obj_get_mesh_indices_index :: proc(obj: Obj, mesh_index: int) -> []u32 {
+	return obj_get_mesh_indices(obj, get_meshes(obj)[mesh_index])
+}
+bob_get_mesh_indices_index :: proc(bob: Bob, mesh_index: int) -> []u32 {
+	return bob_get_mesh_indices(bob, get_meshes(bob)[mesh_index])
+}
+obj_get_mesh_indices :: proc(obj: Obj, mesh: Mesh) -> []u32 {
 	return obj.indices[:]
 }
-get_mesh_indices_bob :: proc(bob: Bob, mesh: Mesh) -> []u32 {
+bob_get_mesh_indices :: proc(bob: Bob, mesh: Mesh) -> []u32 {
 	return get_slice_data(bob.header.indices, bob.data)
 }
-
 
 get_vertices :: proc {
 	get_vertices_obj,

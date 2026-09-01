@@ -9,7 +9,7 @@ struct VertexOutput {
     float3 normal;
     float3 light_dir;
     float2 texcoord;
-    InstanceTextures textures;
+    int    diffuse_id;
 };
 
 struct Uniforms {
@@ -50,7 +50,6 @@ VertexOutput vertex(
     VertexOutput output;
 
     InstanceTransforms itransforms = instance_transforms[instance_id];
-    InstanceTextures   itextures   = instance_textures[instance_id];
 
     float4 vertex        = float4(ivertex.pos, 1.0);
     float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
@@ -59,10 +58,10 @@ VertexOutput vertex(
 
     output.pos = vertex_screen;
 
-    output.normal    = mul(float3x3(itransforms.normal_matrix), ivertex.normal);
-    output.light_dir = normalize(uniforms.light_position.xyz - vertex_world.xyz);
-    output.texcoord  = ivertex.texcoord;
-    output.textures  = itextures;
+    output.normal     = mul(float3x3(itransforms.normal_matrix), ivertex.normal);
+    output.light_dir  = normalize(uniforms.light_position.xyz - vertex_world.xyz);
+    output.texcoord   = ivertex.texcoord;
+    output.diffuse_id = instance_textures[instance_id].diffuse_id;
 
     return output;
 }
@@ -81,8 +80,8 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     //
     // diffuse
     //
-    if (input.textures.diffuse_id >= 0) {
-        col *= textures[input.textures.diffuse_id].Sample(input.texcoord);
+    if (input.diffuse_id >= 0) {
+        col *= textures[input.diffuse_id].Sample(input.texcoord);
     }
 
     return col;

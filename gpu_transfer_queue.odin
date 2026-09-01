@@ -1,22 +1,20 @@
 package learnvk
 
-import "core:fmt"
-import "core:log"
 import "core:mem"
 import "core:slice"
 import vk "vendor:vulkan"
 
 GpuTransferQueue :: struct {
-	buf:        vk.Buffer,
-	buf_memory: vk.DeviceMemory,
-	buf_mmap:   []byte,
+	buffer:    vk.Buffer,
+	memory:    vk.DeviceMemory,
+	mmap:      []byte,
 
 	// how much memory we have copied to the transfer buffer
-	reserved:   int,
+	reserved:  int,
 
 	// lil command buffer for sending shit over
-	recording:  bool,
-	cmdbuf:     vk.CommandBuffer,
+	recording: bool,
+	cmdbuf:    vk.CommandBuffer,
 }
 
 CopyOp :: struct {
@@ -28,7 +26,7 @@ CopyOp :: struct {
 
 @(private = "file")
 queue_cap :: proc(queue: ^GpuTransferQueue) -> int {
-	return max(0, len(queue.buf_mmap) - queue.reserved)
+	return max(0, len(queue.mmap) - queue.reserved)
 }
 
 queue_allocate_chunk :: proc(
@@ -48,7 +46,7 @@ queue_allocate_chunk :: proc(
 
 	if queue_cap(queue) < chunk_size do return
 
-	chunk = queue.buf_mmap[queue.reserved:queue.reserved + chunk_size]
+	chunk = queue.mmap[queue.reserved:queue.reserved + chunk_size]
 
 	// the offset into the buffer is just the offset of the next aligned pointer
 	offset = vk.DeviceSize(queue.reserved)
@@ -120,7 +118,7 @@ queue_append_buffer :: proc(
 
 	vk.CmdCopyBuffer(
 		commandBuffer = queue.cmdbuf,
-		srcBuffer = queue.buf,
+		srcBuffer = queue.buffer,
 		dstBuffer = buffer,
 		regionCount = 1,
 		pRegions = &region,
@@ -142,7 +140,7 @@ queue_can_append_image :: proc(
 ) -> AppendImageAction {
 	if queue_cap(queue) >= data_size {
 		return .yes
-	} else if slice.size(queue.buf_mmap) >= data_size {
+	} else if slice.size(queue.mmap) >= data_size {
 		return .after_flush
 	} else {
 		return .buffer_too_small
@@ -191,7 +189,7 @@ queue_append_image :: proc(
 	ok: bool,
 ) {
 	assert(
-		slice.size(queue.buf_mmap) >= slice.size(image_data),
+		slice.size(queue.mmap) >= slice.size(image_data),
 		"Transfer buffer is too small to upload this image",
 		loc = loc,
 	)
@@ -255,7 +253,7 @@ queue_append_image :: proc(
 	}
 	vk.CmdCopyBufferToImage(
 		commandBuffer = queue.cmdbuf,
-		srcBuffer = queue.buf,
+		srcBuffer = queue.buffer,
 		dstImage = image,
 		dstImageLayout = .TRANSFER_DST_OPTIMAL,
 		regionCount = 1,
@@ -338,31 +336,38 @@ queue_init :: proc(
 	alloc: ^vk.AllocationCallbacks,
 	#any_int transfer_buf_size: vk.DeviceSize,
 	cmdpool: vk.CommandPool,
+) -> (
+	result: vk.Result,
 ) {
 	//
 	// Create and map the transfer buffer
 	//
-	queue.buf, queue.buf_memory = engine_create_buffer(
+	queue.buffer = engine_create_buffer(
 		device,
 		alloc,
 		transfer_buf_size,
 		{.TRANSFER_SRC},
-		{.HOST_VISIBLE, .HOST_COHERENT, .DEVICE_LOCAL},
-	)
+	) or_return
+
+	queue.memory = gpu_malloc_buffer(
+		device,
+		alloc,
+		queue.buffer,
+		{.HOST_VISIBLE, .HOST_COHERENT},
+	) or_return
 
 	data: rawptr
 
-	result := vk.MapMemory(
-		device,
-		queue.buf_memory,
+	vk.MapMemory(
+		device = device,
+		memory = queue.memory,
 		offset = 0,
 		size = auto_cast vk.WHOLE_SIZE,
 		flags = {},
 		ppData = &data,
-	)
-	ensure(result == .SUCCESS)
+	) or_return
 
-	queue.buf_mmap = ([^]byte)(data)[:transfer_buf_size]
+	queue.mmap = ([^]byte)(data)[:transfer_buf_size]
 
 	//
 	// Create the command buffer
@@ -390,9 +395,9 @@ queue_destroy :: proc(
 
 	assert(queue.reserved == 0)
 
-	vk.UnmapMemory(device, queue.buf_memory)
-	vk.FreeMemory(device, queue.buf_memory, alloc)
-	vk.DestroyBuffer(device, queue.buf, alloc)
+	vk.UnmapMemory(device, queue.memory)
+	vk.FreeMemory(device, queue.memory, alloc)
+	vk.DestroyBuffer(device, queue.buffer, alloc)
 
 }
 

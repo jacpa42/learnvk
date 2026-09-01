@@ -309,8 +309,6 @@ shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.Sh
 }
 
 shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulkan.DescriptorType {
-	fmt.eprintfln("%#v", shader_param)
-
 	switch shader_param.type.kind {
 	case .constantBuffer:
 		if shader_param.type.elementType["kind"].(json.String) == "struct" {

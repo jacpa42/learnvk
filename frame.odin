@@ -1,12 +1,10 @@
 package learnvk
 
 import "core:fmt"
-import "core:log"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
-import "core:mem"
-import "core:slice"
+import "model"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -171,28 +169,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 
 	engine_handle_input(engine)
-	uniforms := engine_make_uniforms(engine)
-
-	mem.copy_non_overlapping(
-		dst = engine.vk_uniform_buffer_mmapped,
-		src = rawptr(&uniforms),
-		len = size_of(uniforms),
-	)
-
-	//
-	// Update instance data
-	//
-	instance_data := engine_make_instance_data(engine)
-
-	queue_append_whole_buffer(
-		&engine.transfer_queue,
-		engine.vk_device,
-		engine.vk_queue,
-		engine.vk_instance_buffer,
-		0,
-		slice.to_bytes(instance_data),
-	)
-	queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
+	num_draw_commands := engine_make_framedata(engine, engine.frame_data.ptr)
 
 	//
 	// Run the graphics pipeline
@@ -204,70 +181,44 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Bind vertex buffers
 	//
-	assert(CURRENT_MODEL in engine.model_data_on_gpu)
-
-	// TODO: we can have 1 buffer per model and then just use offsets into into.
-	pOffsets: vk.DeviceSize = 0
-	vk.CmdBindVertexBuffers(
-		commandBuffer = commandBuffer,
-		firstBinding = 0,
-		bindingCount = 1,
-		pBuffers = &engine.vk_model_buffer[CURRENT_MODEL][.model_vertices],
-		pOffsets = &pOffsets,
-	)
-
-	// vk.CmdDrawIndexedIndirect(
-	// 	commandBuffer = commandBuffer, // : CommandBuffer,
-	// 	buffer = engine.vk_draw_indexed_indirect_buffer, // : Buffer,
-	// 	offset = 0, // : DeviceSize,
-	// 	drawCount = 1, // : u32,
-	// 	stride = size_of(DrawInstancesCommand), // : u32
-	// )
+	assert(CURRENT_MODEL in engine.model_loaded)
 
 	//
 	// Draw all our meshes
 	//
-	for &mesh, mesh_index in engine.model_mesh_info[CURRENT_MODEL] {
-		found := false
-		for f in DRAW_FILTER[CURRENT_MODEL] {
-			if f == string(mesh.name[:]) {
-				found = true
-				break
-			}
-		}
+	offset: vk.DeviceSize
+	vk.CmdBindVertexBuffers(
+		commandBuffer = commandBuffer,
+		firstBinding = 0,
+		bindingCount = 1,
+		pBuffers = &engine.vk_model_buffer[.vertex].buffer,
+		pOffsets = &offset,
+	)
+	vk.CmdBindIndexBuffer(
+		commandBuffer = commandBuffer,
+		buffer = engine.vk_model_buffer[.index].buffer,
+		offset = 0,
+		indexType = .UINT32,
+	)
 
-		if !found {
-			log.warnf("Skipping {}.{}", CURRENT_MODEL, string(mesh.name[:]))
-			continue
-		}
+	vk.CmdBindDescriptorSets(
+		commandBuffer = commandBuffer,
+		pipelineBindPoint = .GRAPHICS,
+		layout = engine.vk_pipeline_layout,
+		firstSet = 0,
+		descriptorSetCount = 1,
+		pDescriptorSets = &engine.vk_descriptor_set,
+		dynamicOffsetCount = 0,
+		pDynamicOffsets = nil,
+	)
 
-		vk.CmdBindDescriptorSets(
-			commandBuffer = commandBuffer,
-			pipelineBindPoint = .GRAPHICS,
-			layout = engine.vk_pipeline_layout,
-			firstSet = 0,
-			descriptorSetCount = 1,
-			pDescriptorSets = &engine.vk_descriptor_sets[CURRENT_MODEL][mesh_index],
-			dynamicOffsetCount = 0,
-			pDynamicOffsets = nil,
-		)
-
-		vk.CmdBindIndexBuffer(
-			commandBuffer = commandBuffer,
-			buffer = engine.vk_model_buffer[CURRENT_MODEL][.model_indices],
-			offset = vk.DeviceSize(mesh.index_start) * size_of(u32),
-			indexType = .UINT32,
-		)
-
-		vk.CmdDrawIndexed(
-			commandBuffer = commandBuffer,
-			indexCount = mesh.index_count,
-			instanceCount = u32(len(instance_data)),
-			firstIndex = 0,
-			vertexOffset = 0,
-			firstInstance = 0,
-		)
-	}
+	vk.CmdDrawIndexedIndirect(
+		commandBuffer = commandBuffer,
+		buffer = engine.frame_data.buffer,
+		offset = mapped_buffer_get_offset(engine.frame_data, "draw_commands"),
+		drawCount = num_draw_commands,
+		stride = size_of(DrawInstancesCommand),
+	)
 }
 
 engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
@@ -358,7 +309,7 @@ engine_handle_input :: proc(engine: ^Engine) {
 // odinfmt: enable
 
 #assert(PIPELINE == .shader)
-engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
+engine_make_uniforms :: proc(engine: ^Engine, uniforms: ^ShaderUniforms) {
 	//
 	// Engine setup uniforms
 	//
@@ -385,7 +336,7 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 			up = engine.camera.up,
 		)
 
-	return ShaderUniforms {
+	uniforms^ = {
 		screen_from_world = screen_from_world,
 
 		//
@@ -395,29 +346,124 @@ engine_make_uniforms :: proc(engine: ^Engine) -> ShaderUniforms {
 		ambient_light     = 0.1,
 		flags             = engine.shader_flags,
 	}
+
+	return
 }
 
-engine_make_instance_data :: proc(engine: ^Engine) -> []Instance {
-	clear(engine.instance_data)
+@(require_results)
+engine_make_framedata :: proc(
+	engine: ^Engine,
+	frame_data: ^FrameBufferData,
+) -> (
+	num_draw_commands: u32,
+) {
+	//
+	// Engine setup uniforms
+	//
 
+	if !engine.disable_rotate {
+		engine.model_rotation = math.remainder(engine.model_rotation + engine.delta_time, math.TAU)
+	}
+
+	aspect :=
+		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
+
+	view_direction := camera_view_dir(&engine.camera)
+
+	screen_from_world :=
+		linalg.matrix4_perspective_f32(
+			fovy = math.to_radians_f32(45),
+			aspect = aspect,
+			far = 10,
+			near = 0.01,
+		) *
+		linalg.matrix4_look_at_f32(
+			eye = engine.camera.pos.xyz,
+			centre = engine.camera.pos.xyz + view_direction,
+			up = engine.camera.up,
+		)
+
+	frame_data.uniforms = {
+		screen_from_world = screen_from_world,
+
+		//
+		camera_position   = engine.camera.pos,
+		light_position    = {0, 0, 100, 0},
+		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
+		ambient_light     = 0.1,
+		flags             = engine.shader_flags,
+	}
+
+	//
+	// setup the instance data and draw commands
+	//
 	t := f32(glfw.GetTime() * 0.1)
 
-	for x in -10 ..< 10 do for y in -10 ..< 10 {
-
-		corner := engine.models[CURRENT_MODEL].header.corner
-		dim := engine.models[CURRENT_MODEL].header.dim
+	instance_index: u32
+	for model_tag in (LOAD_MODELS & engine.model_loaded & {CURRENT_MODEL}) {
+		y := 0
+		x := 0
 
 		world_from_model := linalg.matrix4_translate_f32({f32(x) * 1.1, f32(y) * 1.1, 0})
 
-		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001)) * linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z}) * linalg.matrix4_rotate_f32((f32(y) / 100 + t) * math.PI, {0, 1, 0}) * linalg.matrix4_rotate_f32((f32(x) / 100 + t) * math.PI, {1, 0, 0})
+		corner := engine.models[model_tag].header.corner
+		dim := engine.models[model_tag].header.dim
+		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001))
+		model_from_vertex *= linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
+		model_from_vertex *= linalg.matrix4_rotate_f32((f32(y) / 10 + t) * math.PI, {0, 1, 0})
+		model_from_vertex *= linalg.matrix4_rotate_f32((f32(x) / 10 + t) * math.PI, {1, 0, 0})
 
-		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
+		frame_data.instance_transforms[instance_index] = InstanceTransforms {
+			world_from_model  = world_from_model,
+			model_from_vertex = model_from_vertex,
+		}
 
-		append(engine.instance_data, Instance{world_from_model = world_from_model, model_from_vertex = model_from_vertex, normal_matrix = normal_matrix})
+		// TODO: Maintian a list of entities which we can copy mesh data from.
+		frame_data.instance_textures[instance_index] = InstanceTextures {
+			diffuse  = 0,
+			emissive = -1,
+			bump     = -1,
+			specular = -1,
+		}
+
+
+		// TODO: I want to filter out the meshes based on some rule. Not sure
+		// how to do that best.
+
+		//
+		// Set the instance number and instance count for the draw command
+		// in the mesh_draw_info thingie
+		//
+		for &cmd in engine.mesh_draw_command[model_tag] {
+			//
+			// Set the instance start and instance count
+			//
+			cmd.vk_cmd.firstInstance = 0
+			cmd.vk_cmd.instanceCount = 1
+		}
 	}
 
-	return engine.instance_data[:]
+
+	// TODO: We don't actually need to write all the commands each frame, we can
+	// just write to specific draw commands in our memory mapped command list
+	// rather. Could be better? i have no idea how to reason about that
+
+	//
+	// copy over the draw commands the draw commands
+	//
+	for model_tag in (LOAD_MODELS & engine.model_loaded) {
+
+		for cmd, mesh_index in engine.mesh_draw_command[model_tag] {
+			fmt.eprintfln("draw mesh({}) model({}): %#v", mesh_index, model_tag, cmd)
+			frame_data.draw_commands[num_draw_commands] = cmd
+			num_draw_commands += 1
+		}
+
+	}
+
+	return
 }
+
 //
 //
 //

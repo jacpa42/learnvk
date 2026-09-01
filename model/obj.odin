@@ -23,7 +23,7 @@ obj_dump_info :: proc(obj: ^Obj) {
 		name := get_slice_string(mesh.name, obj.strings[:])
 		material := get_slice_string(mesh.material, obj.strings[:])
 		info(
-			"{} mesh {} : name={} material={} num_indicies={}\n",
+			"{} mesh {} : name={} material={} num_indices={}\n",
 			rawptr(obj),
 			i,
 			name,
@@ -162,7 +162,7 @@ obj_make_vertices :: proc(
 	return
 }
 
-obj_cache_mesh_indicies :: proc(
+obj_cache_mesh_indices :: proc(
 	meshes: []Mesh,
 	strings: ^[dynamic]byte,
 	mttlist: ^[dynamic]Material,
@@ -313,7 +313,7 @@ obj_load_memory :: proc(
         flipy     = flipy,
 	)
 
-	obj_cache_mesh_indicies(m.meshes[:], &m.strings, &m.materials)
+	obj_cache_mesh_indices(m.meshes[:], &m.strings, &m.materials)
 
 	result = .Ok
 	return
