@@ -42,15 +42,7 @@ engine_new_texture :: proc(
 
 engine_new_material :: proc(engine: ^Engine) -> (material_id: MaterialID) {
 	material_id = MaterialID(len(engine.material_list))
-	append(
-		&engine.material_list,
-		Material {
-			diffuse_id = NO_TEXTURE,
-			emissive_id = NO_TEXTURE,
-			bump_id = NO_TEXTURE,
-			specular_id = NO_TEXTURE,
-		},
-	)
+	append(&engine.material_list, NO_MATERIAL)
 
 	return
 }
@@ -563,6 +555,15 @@ eat_load_task :: proc(task_array: []LoadTaskData) {
 }
 
 
+//
+// TODO: rewrite this because it's unreadable garbage:
+//
+// 1. We need to load all the textures
+// 2. Figure out which textures go to what materials
+// 3. Allow for the same texture to be mapped to different material types in
+//    different materials
+// 4. Define all the meshes in the model with their names and indicies.
+//
 TexturePath :: cstring
 MaterialName :: string
 engine_append_material_load_task :: proc(

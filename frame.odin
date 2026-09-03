@@ -1,7 +1,6 @@
 package learnvk
 
 import "core:fmt"
-import "core:log"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
@@ -420,7 +419,8 @@ engine_make_framedata :: proc(
 				corner := engine.models[CURRENT_MODEL].header.corner
 				dim := engine.models[CURRENT_MODEL].header.dim
 
-				material := engine.material_list[material_id]
+				material := NO_MATERIAL
+				if material_id >= 0 do material = engine.material_list[material_id]
 
 				frame_data.instance_transforms[instance_index], frame_data.instance_textures[instance_index] =
 					add_instance(t, f32(x), f32(y), corner, dim, material, &instance_index)

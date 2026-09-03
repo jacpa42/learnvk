@@ -10,7 +10,7 @@ import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
 CURRENT_MODEL := ModelTag.viking_room
-LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
+LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL, .dragon}
 PIPELINE :: Pipeline.shader
 
 MAX_DRAW_COMMANDS :: 256
@@ -30,6 +30,9 @@ NUM_MODELS :: len(ModelTag)
 POLYGON_MODE :: vk.PolygonMode.FILL
 PRIMITIVE_TOPOLOGY :: vk.PrimitiveTopology.TRIANGLE_LIST
 STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
+
+NO_TEXTURE: TextureID : -1
+NO_MATERIAL :: Material{NO_TEXTURE, NO_TEXTURE, NO_TEXTURE, NO_TEXTURE}
 
 VULKAN_API_VERSION :: vk.API_VERSION_1_3
 REQUIRED_PHYSICAL_DEVICE_EXTENSIONS := [5]cstring {
@@ -580,7 +583,7 @@ MeshInfo :: struct #all_or_none {
 }
 
 TextureID :: distinct i32
-NO_TEXTURE: TextureID : -1
+
 MaterialID :: distinct i32
 
 Material :: struct #all_or_none {
