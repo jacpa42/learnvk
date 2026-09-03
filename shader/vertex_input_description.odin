@@ -302,6 +302,7 @@ append_vertex_input_description :: proc(
 			copy_shader_param_def_in_odin(o, shader_struct_prefix, param)
 		}
 	}
+
 }
 
 shader_param_get_stage_flags :: proc(shader_param: ShaderParameter) -> vulkan.ShaderStageFlags {
@@ -481,8 +482,17 @@ copy_shader_param_def_in_odin :: proc(
 		}
 
 	case .resource:
-		return // dont care
-
+		if param.type.baseShape == .structuredBuffer {
+			if param.type.resultType["kind"].(json.String) == "struct" {
+				param_elem_type = slang_type_parse_struct(param.type.resultType)
+			} else {
+				log.warnf("Skipping shader param def :: {}", param.name)
+				return
+			}
+		} else {
+			log.warnf("Skipping shader param def :: {}", param.name)
+			return
+		}
 	}
 
 	// This contains a list of #asserts we want to make sure that our data

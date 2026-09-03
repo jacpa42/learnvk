@@ -25,7 +25,6 @@ struct InstanceTransforms {
     float4x4 world_from_model;
     float4x4 model_from_vertex;
     float4x4 normal_matrix;
-    uint     flags;
 }
 
 // -1 means nil
@@ -50,6 +49,7 @@ VertexOutput vertex(
     VertexOutput output;
 
     InstanceTransforms itransforms = instance_transforms[instance_id];
+    InstanceTextures   itextures   = instance_textures[instance_id];
 
     float4 vertex        = float4(ivertex.pos, 1.0);
     float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
@@ -61,7 +61,7 @@ VertexOutput vertex(
     output.normal     = mul(float3x3(itransforms.normal_matrix), ivertex.normal);
     output.light_dir  = normalize(uniforms.light_position.xyz - vertex_world.xyz);
     output.texcoord   = ivertex.texcoord;
-    output.diffuse_id = instance_textures[instance_id].diffuse_id;
+    output.diffuse_id = itextures.diffuse_id;
 
     return output;
 }

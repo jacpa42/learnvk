@@ -72,6 +72,11 @@ queue_append_whole_buffer :: proc(
 	data: []byte,
 	loc := #caller_location,
 ) {
+	assert(buffer != 0, loc = loc)
+	assert(data != nil, loc = loc)
+	assert(device != nil, loc = loc)
+	assert(vk_queue != nil, loc = loc)
+
 	written := 0
 	offset := int(buffer_offset)
 
@@ -94,6 +99,10 @@ queue_append_buffer :: proc(
 	written: int,
 	needs_flush: bool,
 ) {
+	assert(buffer != 0, loc = loc)
+	assert(data != nil, loc = loc)
+	assert(queue != nil, loc = loc)
+
 	//
 	// If we are not recording, we start recording the command buffer
 	//
@@ -105,11 +114,10 @@ queue_append_buffer :: proc(
 	written = min(queue_cap(queue), len(data))
 
 	gpu_copy_dest, srcOffset := queue_allocate_chunk(queue, written)
-	assert(gpu_copy_dest != nil)
+	assert(gpu_copy_dest != nil, loc = loc)
 
 	mem.copy_non_overlapping(raw_data(gpu_copy_dest), raw_data(data[:]), written)
 
-	// TODO: does this work even when the region pointer goes out of scope
 	region := vk.BufferCopy {
 		srcOffset = srcOffset,
 		dstOffset = offset,
@@ -158,7 +166,7 @@ queue_append_whole_image :: proc(
 	image_data: []byte,
 	loc := #caller_location,
 ) -> (
-	ok: bool,
+	result: vk.Result,
 ) {
 	switch queue_can_append_image(queue, slice.size(image_data)) {
 	case .yes:
@@ -169,7 +177,7 @@ queue_append_whole_image :: proc(
 		return queue_append_image(queue, image, image_extent, image_data, loc = loc)
 
 	case .buffer_too_small:
-		return false
+		return .ERROR_OUT_OF_DEVICE_MEMORY
 	}
 
 	unreachable()
@@ -186,8 +194,12 @@ queue_append_image :: proc(
 	image_data: []byte,
 	loc := #caller_location,
 ) -> (
-	ok: bool,
+	result: vk.Result,
 ) {
+	assert(queue != nil, loc = loc)
+	assert(image != 0, loc = loc)
+	assert(image_extent.height * image_extent.width * image_extent.depth != 0, loc = loc)
+	assert(image_data != nil, loc = loc)
 	assert(
 		slice.size(queue.mmap) >= slice.size(image_data),
 		"Transfer buffer is too small to upload this image",
@@ -195,7 +207,7 @@ queue_append_image :: proc(
 	)
 
 	if slice.size(image_data) > queue_cap(queue) {
-		ok = false
+		result = .ERROR_OUT_OF_DEVICE_MEMORY
 		return
 	}
 
@@ -291,7 +303,7 @@ queue_append_image :: proc(
 	}
 
 
-	ok = true
+	result = .SUCCESS
 	return
 }
 

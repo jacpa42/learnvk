@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:mem"
 import vk "vendor:vulkan"
@@ -28,7 +29,7 @@ mapped_buffer_get_offset :: proc(buffer: MappedBuffer($T), $member: string) -> v
 
 // The returned buffer is always EXCLUSIVE access
 @(require_results)
-mapped_buffer_init :: proc "contextless" (
+mapped_buffer_init :: proc(
 	device: vk.Device,
 	mbuf: ^MappedBuffer($T),
 	alloc: ^vk.AllocationCallbacks,
@@ -64,7 +65,7 @@ mapped_buffer_init :: proc "contextless" (
 	return
 }
 
-mapped_buffer_destroy :: proc "contextless" (
+mapped_buffer_destroy :: proc(
 	device: vk.Device,
 	mbuf: ^MappedBuffer($T),
 	alloc: ^vk.AllocationCallbacks,
@@ -78,7 +79,7 @@ mapped_buffer_destroy :: proc "contextless" (
 
 // The returned buffer is always EXCLUSIVE access
 @(require_results)
-buffer_init :: proc "contextless" (
+buffer_init :: proc(
 	device: vk.Device,
 	alloc: ^vk.AllocationCallbacks,
 	#any_int size: vk.DeviceSize,
@@ -109,23 +110,20 @@ buffer_init :: proc "contextless" (
 	return
 }
 
-buffer_destroy :: proc "contextless" (
-	device: vk.Device,
-	mbuf: ^MappedBuffer,
-	alloc: ^vk.AllocationCallbacks,
-) {
+buffer_destroy :: proc(device: vk.Device, mbuf: ^MappedBuffer, alloc: ^vk.AllocationCallbacks) {
 	vk.FreeMemory(device, mbuf.memory, alloc)
 	vk.DestroyBuffer(device, mbuf.buffer, alloc)
 }
 
 // If `ptr!=nil` then the pointer is mapped into memory.
 @(require_results)
-gpu_malloc_buffer :: proc "contextless" (
+gpu_malloc_buffer :: proc(
 	device: vk.Device,
 	alloc: ^vk.AllocationCallbacks,
 	buffer: vk.Buffer,
 	required_properties: vk.MemoryPropertyFlags,
 	ptr: ^rawptr = nil,
+	loc := #caller_location,
 ) -> (
 	memory: vk.DeviceMemory,
 	result: vk.Result,
@@ -134,7 +132,7 @@ gpu_malloc_buffer :: proc "contextless" (
 	requirements: vk.MemoryRequirements
 	vk.GetBufferMemoryRequirements(device, buffer, &requirements)
 
-	memory = gpu_malloc(device, alloc, requirements, required_properties, ptr) or_return
+	memory = gpu_malloc(device, alloc, requirements, required_properties, ptr, loc = loc) or_return
 
 	vk.BindBufferMemory(device, buffer, memory, 0) or_return
 
@@ -146,22 +144,25 @@ gpu_malloc_buffer :: proc "contextless" (
 // To free use `vulkan.FreeMemory`
 //
 @(require_results)
-gpu_malloc :: proc "contextless" (
+gpu_malloc :: proc(
 	device: vk.Device,
 	alloc: ^vk.AllocationCallbacks,
 	requirements: vk.MemoryRequirements,
 	required_properties: vk.MemoryPropertyFlags,
 	ptr: ^rawptr = nil,
+	loc := #caller_location,
 ) -> (
 	memory: vk.DeviceMemory,
 	result: vk.Result,
 ) {
-	when ODIN_DEBUG {
-		context = runtime.default_context()
-		log.warnf("Allocating {}Mib of gpu memory", f32(requirements.size) / (1024 * 1024))
-	}
+	assert(device != nil, loc = loc)
+	assert(requirements.size > 0, loc = loc)
+	assert(requirements.alignment > 0, loc = loc)
+	assert(requirements.memoryTypeBits > 0, loc = loc)
 
-	memory_type_index := device_get_memory_type_index(requirements, required_properties) or_return
+	log.warnf("Allocating {}Mib of gpu memory", f32(requirements.size) / (1024 * 1024))
+
+	memory_type_index := find_memory_type_index(requirements, required_properties) or_return
 
 	alloc_info := vk.MemoryAllocateInfo {
 		sType           = .MEMORY_ALLOCATE_INFO,
@@ -186,13 +187,19 @@ gpu_malloc_image :: proc(
 	image: vk.Image,
 	alloc: ^vk.AllocationCallbacks,
 	required_properties: vk.MemoryPropertyFlags,
+	loc := #caller_location,
 ) -> (
 	memory: vk.DeviceMemory,
 	result: vk.Result,
 ) {
 	requirements: vk.MemoryRequirements
 	vk.GetImageMemoryRequirements(device, image, &requirements)
-	return gpu_malloc(device, alloc, requirements, required_properties)
+	memory = gpu_malloc(device, alloc, requirements, required_properties, loc = loc) or_return
+
+	vk.BindImageMemory(device, image, memory, 0) or_return
+
+	result = .SUCCESS
+	return
 }
 
 @(require_results)
@@ -206,11 +213,12 @@ gpu_arena_init :: proc(
 	alloc: ^vk.AllocationCallbacks,
 	requirements: vk.MemoryRequirements,
 	required_properties: vk.MemoryPropertyFlags,
+	loc := #caller_location,
 ) -> (
 	arena: GpuArena,
 	result: vk.Result,
 ) {
-	memory := gpu_malloc(device, alloc, requirements, required_properties) or_return
+	memory := gpu_malloc(device, alloc, requirements, required_properties, loc = loc) or_return
 	arena = gpu_arena_init_memory(memory, requirements.size)
 	result = .SUCCESS
 	return
@@ -221,7 +229,7 @@ gpu_arena_destroy :: proc(device: vk.Device, arena: GpuArena, alloc: ^vk.Allocat
 		"Used {}/{}={}%% of arena memory",
 		arena.offset,
 		arena.size,
-		f32(arena.offset) / f32(arena.size),
+		100 * f32(arena.offset) / f32(arena.size),
 	)
 	vk.FreeMemory(device, arena.memory, alloc)
 }
@@ -256,10 +264,10 @@ gpu_arena_alloc :: proc(
 	capacity := arena.size - aligned_offset
 	if capacity < size {
 		log.errorf(
-			"{:x} alloc failed (need {} bytes)",
+			"{} :: {:x} arena alloc failed: need {} bytes",
+			loc,
 			rawptr(arena),
 			size - capacity,
-			location = loc,
 		)
 		result = .ERROR_OUT_OF_DEVICE_MEMORY
 		return
@@ -295,7 +303,7 @@ gpu_arena_alloc_buffer :: proc(
 	arena: ^GpuArena,
 	device: vk.Device,
 	buffer: vk.Buffer,
-	ptr: ^^$T = nil,
+	ptr: ^rawptr = nil,
 	loc := #caller_location,
 ) -> (
 	memory_offset: vk.DeviceSize,
@@ -316,15 +324,6 @@ gpu_arena_alloc_buffer :: proc(
 	) or_return
 
 	vk.BindBufferMemory(device, buffer, arena.memory, memory_offset) or_return
-
-	if ptr != nil && size_of(T) != requirements.size {
-		log.warnf(
-			"Allocated {} for buffer {:x}, however mapped to a pointer of size {}",
-			requirements.size,
-			buffer,
-			size_of(T),
-		)
-	}
 
 	result = .SUCCESS
 	return

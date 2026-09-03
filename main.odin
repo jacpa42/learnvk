@@ -1,7 +1,6 @@
 package learnvk
 
 import "core:mem"
-import "core:strings"
 
 //
 // TODO: Figure out how to use an array of samplers
@@ -11,15 +10,11 @@ import "base:runtime"
 import "core:c"
 import "core:debug/trace"
 import "core:log"
-import "core:math"
 import "core:math/bits"
-import "core:os"
 import "core:slice"
-import "core:thread"
 import "core:time"
 import "model"
 import "vendor:glfw"
-import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
 g_logger: runtime.Logger
@@ -143,13 +138,13 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	{
 		glfw.SetErrorCallback(glfw_error_callback)
-		ensure(bool(glfw.Init()), "Failed to initialize GLFW")
-		ensure(bool(glfw.VulkanSupported()))
+		assert(bool(glfw.Init()), "Failed to initialize GLFW")
+		assert(bool(glfw.VulkanSupported()))
 
 		glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
 		glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
 		engine.window = glfw.CreateWindow(1280, 678, APP_NAME, nil, nil)
-		ensure(engine.window != nil, "Failed to create a GLFW window")
+		assert(engine.window != nil, "Failed to create a GLFW window")
 
 		glfw.SetWindowUserPointer(engine.window, engine)
 		glfw.SetKeyCallback(engine.window, callback_key)
@@ -168,7 +163,7 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	// Create the Vulkan allocator
 	//
-	engine.vk_alloc = vk_alloc_init()
+	engine.alloc = vk_alloc_init()
 
 	//
 	// Create the Vulkan Instance
@@ -180,20 +175,20 @@ engine_init :: proc(engine: ^Engine) {
 	//
 	{
 		result = glfw.CreateWindowSurface(
-			engine.vk_instance,
+			engine.instance,
 			engine.window,
-			engine.vk_alloc,
-			&engine.vk_surface,
+			engine.alloc,
+			&engine.surface,
 		)
-		ensure(result == .SUCCESS)
-		ensure(engine.vk_surface != {})
+		assert(result == .SUCCESS)
+		assert(engine.surface != {})
 	}
 
 	//
 	// Load Vulkan function pointers
 	//
 	vk.GetInstanceProcAddr = auto_cast glfw.GetInstanceProcAddress
-	vk.load_proc_addresses(engine.vk_instance)
+	vk.load_proc_addresses(engine.instance)
 
 	//
 	// Create the messenger
@@ -206,12 +201,12 @@ engine_init :: proc(engine: ^Engine) {
 			pfnUserCallback = vulkan_validation_callback,
 		}
 		result = vk.CreateDebugUtilsMessengerEXT(
-			engine.vk_instance,
+			engine.instance,
 			&create_info,
-			engine.vk_alloc,
-			&engine.vk_messenger,
+			engine.alloc,
+			&engine.messenger,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 	//
@@ -244,12 +239,12 @@ engine_init :: proc(engine: ^Engine) {
 			pInitialData    = nil,
 		}
 		result = vk.CreatePipelineCache(
-			engine.vk_device,
+			engine.device,
 			&cache_create_info,
-			engine.vk_alloc,
-			&engine.vk_pipeline_cache,
+			engine.alloc,
+			&engine.pipeline_cache,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 	//
@@ -258,9 +253,14 @@ engine_init :: proc(engine: ^Engine) {
 	engine_init_graphics_pipeline(engine)
 
 	//
-	// Ensure that all the data has been sent to the gpu
+	// Assert that all the data has been sent to the gpu
 	//
-	queue_flush(&engine.transfer_queue, engine.vk_device, engine.vk_queue)
+	queue_flush(&engine.transfer_queue, engine.device, engine.queue)
+
+	//
+	// We have uploaded all our model data and texture data, free everything
+	//
+	for tag in engine.model_loaded do model.destroy(&engine.models[tag])
 }
 
 engine_init_instance :: proc(engine: ^Engine) {
@@ -279,14 +279,14 @@ engine_init_instance :: proc(engine: ^Engine) {
 	//
 	desired_layers: [dynamic; 16]cstring
 	when ENABLE_VALIDATION_LAYERS {
-		append(&desired_layers, "VK_LAYER_KHRONOS_validation")
+		append(&desired_layers, "LAYER_KHRONOS_validation")
 
 		count: u32
-		ensure(vk.EnumerateInstanceLayerProperties(&count, nil) == .SUCCESS)
+		assert(vk.EnumerateInstanceLayerProperties(&count, nil) == .SUCCESS)
 		assert(count > 0)
 
 		supported_layers := make([]vk.LayerProperties, count, context.temp_allocator)
-		ensure(vk.EnumerateInstanceLayerProperties(&count, raw_data(supported_layers)) == .SUCCESS)
+		assert(vk.EnumerateInstanceLayerProperties(&count, raw_data(supported_layers)) == .SUCCESS)
 
 		i := 0
 		for i < len(desired_layers) {
@@ -334,8 +334,8 @@ engine_init_instance :: proc(engine: ^Engine) {
 		ppEnabledExtensionNames = raw_data(required_extensions),
 	}
 
-	result := vk.CreateInstance(&create_info, engine.vk_alloc, &engine.vk_instance)
-	ensure(result == .SUCCESS)
+	result := vk.CreateInstance(&create_info, engine.alloc, &engine.instance)
+	assert(result == .SUCCESS)
 }
 
 engine_init_graphics_pipeline :: proc(engine: ^Engine) {
@@ -352,18 +352,18 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		}
 
 		result = vk.CreateShaderModule(
-			engine.vk_device,
+			engine.device,
 			&shader_module_create_info,
-			engine.vk_alloc,
-			&engine.vk_pipeline_shader,
+			engine.alloc,
+			&engine.pipeline_shader,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 	//
 	// For each stage that the shader defines, define the stage creation info
 	//
-	ensure(len(PIPELINE_STAGES) == len(PIPELINE_STAGE_NAMES))
+	assert(len(PIPELINE_STAGES) == len(PIPELINE_STAGE_NAMES))
 	shader_stage_create_info: [dynamic; PIPELINE_MAX_STAGES]vk.PipelineShaderStageCreateInfo
 
 	for shader_stages, stage_index in PIPELINE_STAGES[PIPELINE] {
@@ -373,7 +373,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 				sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 				flags = {},
 				stage = {shader_stages},
-				module = engine.vk_pipeline_shader,
+				module = engine.pipeline_shader,
 				pName = PIPELINE_STAGE_NAMES[PIPELINE][stage_index],
 				pSpecializationInfo = nil,
 			},
@@ -383,12 +383,12 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	// Setup dynamic state for the pipeline. At the moment, just viewport and scissor.
 	//
-	append(&engine.vk_pipeline_dynamic_state, ..[]vk.DynamicState{.VIEWPORT, .SCISSOR})
+	append(&engine.pipeline_dynamic_state, ..[]vk.DynamicState{.VIEWPORT, .SCISSOR})
 
 	dynamic_state_create_info := vk.PipelineDynamicStateCreateInfo {
 		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = u32(len(engine.vk_pipeline_dynamic_state)),
-		pDynamicStates    = raw_data(engine.vk_pipeline_dynamic_state[:]),
+		dynamicStateCount = u32(len(engine.pipeline_dynamic_state)),
+		pDynamicStates    = raw_data(engine.pipeline_dynamic_state[:]),
 	}
 
 	//
@@ -428,17 +428,11 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Setup the pasteuriser struct
 	//
 	raster_create_info := vk.PipelineRasterizationStateCreateInfo {
-		sType                   = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		depthClampEnable        = false,
-		rasterizerDiscardEnable = false,
-		polygonMode             = POLYGON_MODE,
-		cullMode                = CULL_MODE,
-		frontFace               = FRONT_FACE,
-		depthBiasEnable         = false,
-		lineWidth               = LINE_WIDTH,
-		depthBiasConstantFactor = {},
-		depthBiasClamp          = {},
-		depthBiasSlopeFactor    = {},
+		sType       = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		polygonMode = POLYGON_MODE,
+		cullMode    = CULL_MODE,
+		frontFace   = FRONT_FACE,
+		lineWidth   = LINE_WIDTH,
 	}
 
 	//
@@ -456,7 +450,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 
 	// Only one color attachment for now
-	engine.vk_color_attachment = {
+	engine.color_attachment = {
 		blendEnable         = true,
 		srcColorBlendFactor = .SRC_ALPHA,
 		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
@@ -472,26 +466,53 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		logicOpEnable   = false,
 		logicOp         = .COPY,
 		attachmentCount = 1,
-		pAttachments    = &engine.vk_color_attachment,
+		pAttachments    = &engine.color_attachment,
 	}
 
 	//
-	// Create the vertex/uniform/images buffers
-	// Basically everything which requires the staging buffer mapped into memory
+	// Load all our textures into memory. This is needed before we allocate gpu
+	// memory.
 	//
-	engine_init_buffer_and_images(engine)
+	load_tasks := engine_load_material_textures(engine)
+	defer destroy_load_tasks(&load_tasks)
 
 	//
-	// Load all the textures we could possibly need
+	// Initialize the upload queue
 	//
-	engine_load_all_textures(engine)
+	queue_init(
+		queue = &engine.transfer_queue,
+		device = engine.device,
+		alloc = engine.alloc,
+		transfer_buf_size = STAGING_BUFFER_SIZE,
+		cmdpool = engine.cmdpool,
+	)
+
+	// TODO: Maybe this is not always possible? to get device local , host
+	// visible and host coherent?
 
 	//
-	// We have uploaded all our model data and texture data, free everything
+	// Create the per-frame mapped buffer
 	//
-	for tag in engine.model_loaded {
-		model.destroy(&engine.models[tag])
-	}
+	result = mapped_buffer_init(
+		device = engine.device,
+		mbuf = &engine.frame_data,
+		alloc = engine.alloc,
+		usage = {.UNIFORM_BUFFER, .INDIRECT_BUFFER, .STORAGE_BUFFER},
+		required_properties = {.DEVICE_LOCAL, .HOST_VISIBLE, .HOST_COHERENT},
+	)
+	assert(result == .SUCCESS)
+
+	//
+	// Initialize the textures
+	//
+	result = engine_init_textures(engine, load_tasks)
+	assert(result == .SUCCESS)
+
+	//
+	// Initialize the model buffers
+	//
+	result = engine_init_model_buffers(engine)
+	assert(result == .SUCCESS)
 
 	//
 	// Create the samplers
@@ -519,12 +540,12 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		}
 
 		result = vk.CreateSampler(
-			engine.vk_device,
+			engine.device,
 			&sampler_create_info,
-			engine.vk_alloc,
-			&engine.vk_image_sampler[tag],
+			engine.alloc,
+			&engine.image_sampler[tag],
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 	//
@@ -541,7 +562,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 
 		// set layouts
 		setLayoutCount         = 1,
-		pSetLayouts            = &engine.vk_set_layout,
+		pSetLayouts            = &engine.set_layout,
 
 		// push constants
 		pushConstantRangeCount = 0,
@@ -549,13 +570,13 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	}
 
 	result = vk.CreatePipelineLayout(
-		engine.vk_device,
+		engine.device,
 		&pipeline_layout_create_info,
-		engine.vk_alloc,
-		&engine.vk_pipeline_layout,
+		engine.alloc,
+		&engine.pipeline_layout,
 	)
-	ensure(result == .SUCCESS)
-	ensure(engine.vk_pipeline_layout != {})
+	assert(result == .SUCCESS)
+	assert(engine.pipeline_layout != {})
 
 	//
 	// Define the depth stencil state for the pipeline
@@ -585,8 +606,8 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		// We are using 1 color attachment with the same format as our
 		// surface.
 		colorAttachmentCount    = 1,
-		pColorAttachmentFormats = &engine.vk_swapchain_surface_format.format,
-		depthAttachmentFormat   = engine.vk_depth_image_format,
+		pColorAttachmentFormats = &engine.swapchain_surface_format.format,
+		depthAttachmentFormat   = engine.depth_image_format,
 		viewMask                = {}, // unused 2026-08-07
 		stencilAttachmentFormat = {}, // unused 2026-08-07
 	}
@@ -606,7 +627,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		//      rendering. If this structure is not specified, and the pipeline
 		//      does not include a RenderPass, viewMask and
 		//      colorAttachmentCount are 0, and depthAttachmentFormat and
-		//      stencilAttachmentFormat are VK_FORMAT_UNDEFINED. If a graphics
+		//      stencilAttachmentFormat are FORMAT_UNDEFINED. If a graphics
 		//      pipeline is created with a valid RenderPass, parameters of
 		//      this structure are ignored.
 		// ```
@@ -628,7 +649,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		pDepthStencilState  = &depth_stencil_state,
 		pColorBlendState    = &color_blend_create_info,
 		pDynamicState       = &dynamic_state_create_info,
-		layout              = engine.vk_pipeline_layout,
+		layout              = engine.pipeline_layout,
 
 		// NOTE: Used to derive a pipeline from another with
 		// PipelineCreateFlag.DERIVATIVE. Leaving nil at the moment
@@ -641,353 +662,226 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Create the graphics pipelines
 	//
 	result = vk.CreateGraphicsPipelines(
-		engine.vk_device,
-		engine.vk_pipeline_cache,
+		engine.device,
+		engine.pipeline_cache,
 		1,
 		&pipeline_create_info,
-		engine.vk_alloc,
-		&engine.vk_render_pipeline,
+		engine.alloc,
+		&engine.render_pipeline,
 	)
-	ensure(result == .SUCCESS)
+	assert(result == .SUCCESS)
 }
 
-engine_init_buffer_and_images :: proc(engine: ^Engine) {
-	result: vk.Result
+//
+// At the end of this procedure, all my textures are defined in their proper
+// location.
+//
+engine_init_textures :: proc(
+	engine: ^Engine,
+	texture_load_tasks: [dynamic]LoadTaskData,
+) -> (
+	result: vk.Result,
+) {
+	texture_arena_requirements := vk.MemoryRequirements {
+		memoryTypeBits = bits.U32_MAX,
+	}
+
+	// Add the requirements for allocating all the textures
+	for task in texture_load_tasks do if task.output.ok {
+		USAGE :: vk.ImageUsageFlags{.SAMPLED, .TRANSFER_DST}
+		FORMAT :: vk.Format.R8G8B8A8_SRGB
+		w := u32(task.output.width)
+		h := u32(task.output.height)
+
+		req := get_memory_requirements_image(engine.device, FORMAT, USAGE, w, h)
+		refine_memory_requirement(&texture_arena_requirements, req)
+	}
+
+	engine.texture_arena = gpu_arena_init(
+		device = engine.device,
+		alloc = engine.alloc,
+		requirements = texture_arena_requirements,
+		required_properties = {.DEVICE_LOCAL},
+	) or_return
 
 	//
-	// Create the per-frame mapped buffer
+	// Create the images
 	//
-	result = mapped_buffer_init(
-		device = engine.vk_device,
-		mbuf = &engine.frame_data,
-		alloc = engine.vk_alloc,
-		usage = {.UNIFORM_BUFFER, .INDIRECT_BUFFER, .STORAGE_BUFFER},
-		required_properties = {.DEVICE_LOCAL, .HOST_VISIBLE, .HOST_COHERENT},
-	)
-	ensure(result == .SUCCESS)
+	for t in texture_load_tasks do if t.output.ok {
+		texture := &engine.texture_list[t.input.texture_id]
+
+		image_create_info := vk.ImageCreateInfo {
+			sType = .IMAGE_CREATE_INFO,
+			imageType = .D2,
+			format = .R8G8B8A8_SRGB,
+			extent = {width = u32(t.output.width), height = u32(t.output.height), depth = 1},
+			mipLevels = 1,
+			arrayLayers = 1,
+			samples = {._1},
+			tiling = .OPTIMAL,
+			usage = {.SAMPLED},
+			sharingMode = .EXCLUSIVE,
+		}
+		vk.CreateImage(engine.device, &image_create_info, engine.alloc, &texture.image) or_return
+
+		//
+		// Allocate the image and bind the memory to it
+		//
+		_ = gpu_arena_alloc_image(&engine.texture_arena, engine.device, texture.image) or_return
+
+		//
+		// Create the image view (after binding the memory)
+		//
+		image_view_create_info := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			image = texture.image,
+			viewType = .D2,
+			format = image_create_info.format,
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+		vk.CreateImageView(engine.device, &image_view_create_info, engine.alloc, &texture.view) or_return
+
+		//
+		// Append the upload task to the queue
+		//
+		queue_append_whole_image(&engine.transfer_queue, engine.device, engine.queue, texture.image, image_create_info.extent, t.output.data) or_return
+	}
+
+	result = .SUCCESS
+	return
+}
+
+//
+// Create the model data arena and model buffers
+//
+engine_init_model_buffers :: proc(engine: ^Engine) -> (result: vk.Result) {
+	model_arena_requirements := vk.MemoryRequirements {
+		memoryTypeBits = bits.U32_MAX,
+	}
+
+	//
+	// Combine the model data buffers into one massive buffer
+	//
+	buffer_info: [DataBufferTag]struct {
+		size:  vk.DeviceSize,
+		usage: vk.BufferUsageFlags,
+	}
+	for &info, tag in buffer_info {
+		//
+		// Get the memory requirements for the buffer
+		//
+
+		for model_tag in engine.model_loaded do switch tag {
+		case .vertex:
+			info.size += vk.DeviceSize(slice.size(model.get_vertices(engine.models[model_tag])))
+			info.usage += {.VERTEX_BUFFER, .TRANSFER_DST}
+		case .index:
+			info.size += vk.DeviceSize(slice.size(model.get_all_indices(engine.models[model_tag])))
+			info.usage += {.INDEX_BUFFER, .TRANSFER_DST}
+		}
+
+		requirements := get_memory_requirements_buffer(engine.device, info.size, info.usage)
+
+		//
+		// Refine the requirements for the model arena
+		//
+		refine_memory_requirement(&model_arena_requirements, requirements)
+	}
+
+	engine.model_arena = gpu_arena_init(
+		device = engine.device,
+		alloc = engine.alloc,
+		requirements = model_arena_requirements,
+		required_properties = {.DEVICE_LOCAL},
+	) or_return
+
+	//
+	// Create the buffers and allocate them on the model arena
+	//
+	for info, tag in buffer_info {
+		engine.data_buffer[tag] = engine_create_buffer(
+			engine.device,
+			engine.alloc,
+			info.size,
+			info.usage,
+		) or_return
+
+		//
+		// Allocate all our model buffers in the arena
+		//
+		_ = gpu_arena_alloc_buffer(
+			&engine.model_arena,
+			engine.device,
+			engine.data_buffer[tag],
+		) or_return
+
+
+		// Upload all the data to them
+		upload_dest := engine.data_buffer[tag]
+		upload_dest_offset: vk.DeviceSize
+
+		for model_tag in engine.model_loaded {
+			data: []byte
+			defer upload_dest_offset += vk.DeviceSize(slice.size(data))
+
+			switch tag {
+			case .vertex:
+				data = to_bytes(model.get_vertices(engine.models[model_tag]))
+			case .index:
+				data = to_bytes(model.get_all_indices(engine.models[model_tag]))
+			}
+
+			queue_append_whole_buffer(
+				&engine.transfer_queue,
+				engine.device,
+				engine.queue,
+				upload_dest,
+				upload_dest_offset,
+				data,
+			)
+		}
+
+	}
+
+	result = .SUCCESS
+	return
+}
+
+engine_init_arenas_and_buffers_and_images :: proc(
+	engine: ^Engine,
+	texture_load_tasks: [dynamic]LoadTaskData,
+) {
+	result: vk.Result
 
 	//
 	// Initialize the upload queue
 	//
 	queue_init(
 		queue = &engine.transfer_queue,
-		device = engine.vk_device,
-		alloc = engine.vk_alloc,
+		device = engine.device,
+		alloc = engine.alloc,
 		transfer_buf_size = STAGING_BUFFER_SIZE,
-		cmdpool = engine.vk_cmdpool,
+		cmdpool = engine.cmdpool,
 	)
 
-	//
-	// Create the model buffers.
-	//
-
-	for buffer_type in ModelBuffer {
-
-		//
-		// Compute the total required size for the model buffer
-		//
-		buffer_size := 0
-		for model_tag in engine.model_loaded do switch buffer_type {
-		case .index:
-			buffer_size += slice.size(model.get_all_indices(engine.models[model_tag]))
-		case .vertex:
-			buffer_size += slice.size(model.get_vertices(engine.models[model_tag]))
-		}
-
-
-		//
-		// Get the usage flags for the buffer type
-		//
-		usage: vk.BufferUsageFlags
-		switch buffer_type {
-		case .vertex:
-			usage = {.VERTEX_BUFFER, .TRANSFER_DST}
-		case .index:
-			usage = {.INDEX_BUFFER, .TRANSFER_DST}
-		}
-
-		//
-		// Create the buffer along with its memory
-		//
-		engine.vk_model_buffer[buffer_type], result = buffer_init(
-			device = engine.vk_device,
-			alloc = engine.vk_alloc,
-			size = buffer_size,
-			usage = usage,
-			required_properties = {.DEVICE_LOCAL},
-		)
-		ensure(result == .SUCCESS)
-	}
+	// TODO: Maybe this is not always possible? to get device local , host
+	// visible and host coherent?
 
 	//
-	// Copy over the data for the mesh names
+	// Create the per-frame mapped buffer
 	//
-	for model_tag in engine.model_loaded {
-		m := engine.models[model_tag]
-		arena_alloc := mem.arena_allocator(&engine.arena)
-
-		engine.mesh_names[model_tag] = make([]string, len(model.get_meshes(m)), arena_alloc)
-
-		//
-		// Copy the name data
-		//
-		for &name, mesh_index in engine.mesh_names[model_tag] {
-			mesh_name := model.get_mesh_name(m, mesh_index)
-			name = strings.clone(mesh_name, arena_alloc)
-		}
-	}
-
-	//
-	// Define the mesh draw commands
-	//
-	model_index_offset: u32 = 0
-	for model_tag in engine.model_loaded {
-		m := engine.models[model_tag]
-		arena_alloc := mem.arena_allocator(&engine.arena)
-
-		defer model_index_offset += u32(len(model.get_all_indices(m)))
-
-		engine.mesh_draw_command[model_tag] = make(
-			[]DrawInstancesCommand,
-			len(model.get_meshes(m)),
-			arena_alloc,
-		)
-
-		//
-		// Define the vk draw commands
-		//
-		mesh_index_offset: u32 = model_index_offset
-		for &cmd, mesh_index in engine.mesh_draw_command[model_tag] {
-
-			num_mesh_indices := u32(len(model.get_mesh_indices(m, mesh_index)))
-			defer mesh_index_offset += num_mesh_indices
-
-			cmd = DrawInstancesCommand {
-				vk_cmd = vk.DrawIndexedIndirectCommand {
-					indexCount    = num_mesh_indices,
-					firstIndex    = mesh_index_offset,
-
-					// TODO: offset into the vertex buffer should be zero?
-					// we are indexing into a full buffer so its okay.
-					vertexOffset  = 0,
-
-					// defined at rendertime
-					instanceCount = 0,
-					firstInstance = 0,
-				},
-			}
-		}
-	}
-
-	//
-	// Append all the memory uploads to the queue
-	//
-	for buffer_tag in ModelBuffer {
-		upload_buffer := engine.vk_model_buffer[buffer_tag].buffer
-		upload_buffer_offset: vk.DeviceSize = 0
-
-		for model_tag in engine.model_loaded {
-			m := engine.models[model_tag]
-
-			data: []byte
-			defer upload_buffer_offset += vk.DeviceSize(len(data))
-
-			switch buffer_tag {
-			case .vertex:
-				data = to_bytes(model.get_vertices(m))
-			case .index:
-				data = to_bytes(model.get_all_indices(m))
-			}
-
-			//
-			// Queue the copying of the data to the gpu
-			//
-			assert(data != nil)
-			assert(len(data) > 0)
-			queue_append_whole_buffer(
-				&engine.transfer_queue,
-				engine.vk_device,
-				engine.vk_queue,
-				upload_buffer,
-				upload_buffer_offset,
-				data,
-			)
-		}
-	}
-}
-
-engine_load_all_textures :: proc(engine: ^Engine) {
-	result: vk.Result
-
-	//
-	// Define all the texture load tasks
-	//
-	tasks := make([dynamic]LoadTaskData, 0, 64, context.temp_allocator)
-
-	defer for t in tasks {
-		if t.output.data_needs_free {
-			stb_image.image_free(raw_data(t.output.data))
-		}
-	}
-
-	for tag in engine.model_loaded {
-		meshes := model.get_meshes(engine.models[tag])
-		model := engine.models[tag]
-
-		engine.vk_mesh_textures[tag] = make([][MaterialType]Texture, len(meshes))
-
-		for mesh, mesh_index in meshes {
-			mesh_textures_ptr := &engine.vk_mesh_textures[tag][mesh_index]
-			engine_define_texture_load_task(&tasks, mesh_textures_ptr, model, tag, mesh)
-		}
-	}
-
-	//
-	// Divy up the tasks
-	//
-	threads := make([]^thread.Thread, os.get_processor_core_count(), context.temp_allocator)
-	chunk_size := math.floor_div(len(tasks), len(threads) + 1)
-	num_tasks_consumed := 0
-
-	thread_index := 0
-	for num_tasks_consumed + chunk_size < len(tasks) && thread_index < len(threads) {
-		task_slice := tasks[num_tasks_consumed:num_tasks_consumed + chunk_size]
-		threads[thread_index] = thread.create_and_start_with_poly_data(
-			data = task_slice,
-			fn = eat_load_task,
-		)
-
-		thread_index += 1
-		num_tasks_consumed += len(task_slice)
-	}
-
-	//
-	// Eat the remainder on main thread
-	//
-	eat_load_task(tasks[num_tasks_consumed:])
-	for t in threads[:thread_index] do thread.destroy(t)
-
-	//
-	// Initialize the mesh arena
-	//
-	expected_num_allocations: vk.DeviceSize
-	texture_arena_memory_requirements := vk.MemoryRequirements {
-		size           = 0,
-		alignment      = 0,
-		memoryTypeBits = max(u32),
-	}
-
-	for task in tasks do if task.output.ok {
-		create_info := vk.ImageCreateInfo {
-			sType         = .IMAGE_CREATE_INFO,
-			imageType     = .D2,
-			format        = task.input.format,
-			extent        = {u32(task.output.width), u32(task.output.height), 1},
-			mipLevels     = 1,
-			arrayLayers   = 1,
-			samples       = {._1},
-			tiling        = .OPTIMAL,
-			usage         = {.SAMPLED, .TRANSFER_DST},
-			sharingMode   = .EXCLUSIVE,
-			initialLayout = .UNDEFINED,
-		}
-
-		result = vk.CreateImage(engine.vk_device, &create_info, engine.vk_alloc, &task.input.texture.image)
-		ensure(result == .SUCCESS)
-
-		requirements: vk.MemoryRequirements
-		vk.GetImageMemoryRequirements(engine.vk_device, task.input.texture.image, &requirements)
-
-		// refine our requirements for the arena
-		expected_num_allocations += 1
-		texture_arena_memory_requirements.size += requirements.size
-		texture_arena_memory_requirements.alignment = max(texture_arena_memory_requirements.alignment, requirements.alignment)
-		texture_arena_memory_requirements.memoryTypeBits &= requirements.memoryTypeBits
-	}
-
-	//
-	// Then allocate the mesh arena
-	//
-	texture_arena_memory_requirements.size +=
-		expected_num_allocations * texture_arena_memory_requirements.alignment
-
-	engine.texture_arena, result = gpu_arena_init(
-		device = engine.vk_device,
-		alloc = engine.vk_alloc,
-		requirements = texture_arena_memory_requirements,
-		required_properties = {.DEVICE_LOCAL},
+	result = mapped_buffer_init(
+		device = engine.device,
+		mbuf = &engine.frame_data,
+		alloc = engine.alloc,
+		usage = {.UNIFORM_BUFFER, .INDIRECT_BUFFER, .STORAGE_BUFFER},
+		required_properties = {.DEVICE_LOCAL, .HOST_VISIBLE, .HOST_COHERENT},
 	)
-	ensure(result == .SUCCESS)
-
-	//
-	// Add the upload task for each image
-	//
-
-	for task in tasks {
-		if task.output.ok {
-
-			// map the memory to the image
-			requirements: vk.MemoryRequirements
-			vk.GetImageMemoryRequirements(
-				engine.vk_device,
-				task.input.texture.image,
-				&requirements,
-			)
-
-			memory_offset: vk.DeviceSize
-			memory_offset, result = gpu_arena_alloc(
-				&engine.texture_arena,
-				requirements.size,
-				requirements.alignment,
-			)
-			ensure(result == .SUCCESS)
-
-			result = vk.BindImageMemory(
-				device = engine.vk_device,
-				image = task.input.texture.image,
-				memory = engine.texture_arena.memory,
-				memoryOffset = memory_offset,
-			)
-			ensure_contextless(result == .SUCCESS)
-
-			//
-			// we need to create the view *after* we bind the memory!
-			//
-			view_create_info := vk.ImageViewCreateInfo {
-				sType = .IMAGE_VIEW_CREATE_INFO,
-				image = task.input.texture.image,
-				viewType = .D2,
-				format = task.input.format,
-				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-			}
-			result = vk.CreateImageView(
-				engine.vk_device,
-				&view_create_info,
-				engine.vk_alloc,
-				&task.input.texture.view,
-			)
-			ensure(result == .SUCCESS)
-
-			ok := queue_append_whole_image(
-				&engine.transfer_queue,
-				engine.vk_device,
-				engine.vk_queue,
-				task.input.texture.image,
-				{u32(task.output.width), u32(task.output.height), 1},
-				task.output.data,
-			)
-			ensure(ok)
-
-		} else {
-			log.warnf("Didn't succeed in the task load for \"{}\"", task.input.texture_cpath)
-		}
-	}
-
+	assert(result == .SUCCESS)
 }
 
 engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	result: vk.Result
-
 
 	maxSets: u32
 	pool_sizes: [ShaderBinding]vk.DescriptorPoolSize
@@ -1010,13 +904,9 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	// this one is special its an array of textures
 	//
 	case .textures:
-		texture_num: u32
-		for model_tag in engine.model_loaded do for mesh_texture in engine.vk_mesh_textures[model_tag] {
-			for t in mesh_texture {
-				if t.image != 0 && t.view != 0 do texture_num += 1
-			}
-		}
+		assert(len(engine.texture_list) > 0)
 
+		texture_num := u32(len(engine.texture_list))
 		pool_sizes[tag] = {layout.descriptorType, texture_num}
 		maxSets += texture_num
 
@@ -1038,12 +928,12 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	}
 
 	result = vk.CreateDescriptorPool(
-		engine.vk_device,
+		engine.device,
 		&pool_create_info,
-		engine.vk_alloc,
-		&engine.vk_descriptor_pool,
+		engine.alloc,
+		&engine.descriptor_pool,
 	)
-	ensure(result == .SUCCESS)
+	assert(result == .SUCCESS)
 
 	//
 	// Specify and create the set layout
@@ -1061,12 +951,12 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		}
 
 		result = vk.CreateDescriptorSetLayout(
-			engine.vk_device,
+			engine.device,
 			&create_info,
-			engine.vk_alloc,
-			&engine.vk_set_layout,
+			engine.alloc,
+			&engine.set_layout,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 
@@ -1076,24 +966,18 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 
 	alloc_info := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool     = engine.vk_descriptor_pool,
+		descriptorPool     = engine.descriptor_pool,
 		descriptorSetCount = 1,
-		pSetLayouts        = &engine.vk_set_layout,
+		pSetLayouts        = &engine.set_layout,
 	}
 
-	result = vk.AllocateDescriptorSets(engine.vk_device, &alloc_info, &engine.vk_descriptor_set)
-	ensure(result == .SUCCESS)
+	result = vk.AllocateDescriptorSets(engine.device, &alloc_info, &engine.descriptor_set)
+	assert(result == .SUCCESS)
 
 
 	//
 	// Configure the descriptor set.
 	//
-
-	ThingThatMakesThisEasierToRead :: struct {
-		set:     vk.DescriptorSet,
-		binding: u32,
-		type:    vk.DescriptorType,
-	}
 
 	configure_single_buffer :: proc(
 		device: vk.Device,
@@ -1124,29 +1008,19 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		binding: u32,
 		type: vk.DescriptorType,
 	) {
+		assert(int(num_images) == len(engine.texture_list))
+
 		image_info := make([]vk.DescriptorImageInfo, num_images, context.temp_allocator)
 
-		image_info_len: u32
-		for tag in engine.model_loaded do for &mesh_textures in engine.vk_mesh_textures[tag] {
-			for &tex, type in mesh_textures {
+		for tex, i in engine.texture_list {
+			assert(tex.image > 0 && tex.view > 0)
 
-				if (tex.image == 0 || tex.view == 0) {
-					tex.shader_array_index = -1
-					continue
-				}
-
-				tex.shader_array_index = i32(image_info_len)
-
-				image_info[image_info_len] = vk.DescriptorImageInfo {
-					sampler     = engine.vk_image_sampler[type],
-					imageView   = tex.view,
-					imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-				}
-				image_info_len += 1
+			image_info[i] = vk.DescriptorImageInfo {
+				sampler     = engine.image_sampler[tex.tag],
+				imageView   = tex.view,
+				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
 		}
-
-		assert(num_images == image_info_len)
 
 		write := vk.WriteDescriptorSet {
 			sType           = .WRITE_DESCRIPTOR_SET,
@@ -1155,11 +1029,11 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			descriptorType  = type,
 
 			//
-			descriptorCount = image_info_len,
+			descriptorCount = u32(len(image_info)),
 			pImageInfo      = raw_data(image_info),
 		}
 
-		vk.UpdateDescriptorSets(engine.vk_device, 1, &write, 0, nil)
+		vk.UpdateDescriptorSets(engine.device, 1, &write, 0, nil)
 	}
 
 	#assert(PIPELINE == .shader)
@@ -1174,7 +1048,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			range  = size_of(engine.frame_data.ptr.uniforms),
 		}
 
-		configure_single_buffer(engine.vk_device, &buffer_info, engine.vk_descriptor_set, binding.binding, binding.descriptorType)
+		configure_single_buffer(engine.device, &buffer_info, engine.descriptor_set, binding.binding, binding.descriptorType)
 
 	case .instance_transforms:
 		assert(binding.descriptorCount == 1)
@@ -1185,7 +1059,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			range  = size_of(engine.frame_data.ptr.instance_transforms),
 		}
 
-		configure_single_buffer(engine.vk_device, &buffer_info, engine.vk_descriptor_set, binding.binding, binding.descriptorType)
+		configure_single_buffer(engine.device, &buffer_info, engine.descriptor_set, binding.binding, binding.descriptorType)
 
 	case .instance_textures:
 		assert(binding.descriptorCount == 1)
@@ -1196,10 +1070,10 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			range  = size_of(engine.frame_data.ptr.instance_textures),
 		}
 
-		configure_single_buffer(engine.vk_device, &buffer_info, engine.vk_descriptor_set, binding.binding, binding.descriptorType)
+		configure_single_buffer(engine.device, &buffer_info, engine.descriptor_set, binding.binding, binding.descriptorType)
 
 	case .textures:
-		configure_image_array(engine, binding.descriptorCount, engine.vk_descriptor_set, binding.binding, binding.descriptorType)
+		configure_image_array(engine, binding.descriptorCount, engine.descriptor_set, binding.binding, binding.descriptorType)
 
 	}
 }
@@ -1212,16 +1086,16 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 	cmd_pool_create_info := vk.CommandPoolCreateInfo {
 		sType            = .COMMAND_POOL_CREATE_INFO,
 		flags            = {.RESET_COMMAND_BUFFER},
-		queueFamilyIndex = engine.vk_queue_index,
+		queueFamilyIndex = engine.queue_index,
 	}
 
 	result = vk.CreateCommandPool(
-		engine.vk_device,
+		engine.device,
 		&cmd_pool_create_info,
-		engine.vk_alloc,
-		&engine.vk_cmdpool,
+		engine.alloc,
+		&engine.cmdpool,
 	)
-	ensure(result == .SUCCESS)
+	assert(result == .SUCCESS)
 
 
 	//
@@ -1229,17 +1103,13 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 	//
 	cmdbuf_alloc_create_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
-		commandPool        = engine.vk_cmdpool,
+		commandPool        = engine.cmdpool,
 		level              = .PRIMARY,
 		commandBufferCount = 1,
 	}
 
-	result = vk.AllocateCommandBuffers(
-		engine.vk_device,
-		&cmdbuf_alloc_create_info,
-		&engine.vk_cmdbuf,
-	)
-	ensure(result == .SUCCESS)
+	result = vk.AllocateCommandBuffers(engine.device, &cmdbuf_alloc_create_info, &engine.cmdbuf)
+	assert(result == .SUCCESS)
 
 	//
 	// Create the semaphores and fences for the command buffer
@@ -1252,26 +1122,21 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 		//
 		// Create the semaphores for the render completion
 		//
-		for &sema in engine.vk_swapchain_semas {
-			result = vk.CreateSemaphore(
-				engine.vk_device,
-				&sema_create_info,
-				engine.vk_alloc,
-				&sema,
-			)
-			ensure(result == .SUCCESS)
+		for &sema in engine.swapchain_semas {
+			result = vk.CreateSemaphore(engine.device, &sema_create_info, engine.alloc, &sema)
+			assert(result == .SUCCESS)
 		}
 
 		//
 		// Create the semaphores for the frame presentation completion
 		//
 		result = vk.CreateSemaphore(
-			engine.vk_device,
+			engine.device,
 			&sema_create_info,
-			engine.vk_alloc,
-			&engine.vk_present_complete_sema,
+			engine.alloc,
+			&engine.present_complete_sema,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		//
 		// Create the fences
@@ -1281,12 +1146,12 @@ engine_init_command_buffers :: proc(engine: ^Engine) {
 			flags = {.SIGNALED},
 		}
 		result = vk.CreateFence(
-			engine.vk_device,
+			engine.device,
 			&fence_create_info,
-			engine.vk_alloc,
-			&engine.vk_draw_fence,
+			engine.alloc,
+			&engine.draw_fence,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 }
 
@@ -1296,19 +1161,19 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 
 	{
 		count: u32
-		result = vk.EnumeratePhysicalDevices(engine.vk_instance, &count, nil)
-		ensure(result == .SUCCESS)
+		result = vk.EnumeratePhysicalDevices(engine.instance, &count, nil)
+		assert(result == .SUCCESS)
 
 		devices = make([]vk.PhysicalDevice, count, context.temp_allocator)
 
-		result = vk.EnumeratePhysicalDevices(engine.vk_instance, &count, raw_data(devices))
-		ensure(result == .SUCCESS)
+		result = vk.EnumeratePhysicalDevices(engine.instance, &count, raw_data(devices))
+		assert(result == .SUCCESS)
 	}
 
 	switch len(devices) {
 	case 0:
 		log.errorf("No gpu found. Cannot continue.")
-		ensure(false)
+		assert(false)
 
 	case 1:
 	// nothing
@@ -1318,7 +1183,7 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 	}
 
 	search_device: for physical_device in devices {
-		ensure(physical_device != nil)
+		assert(physical_device != nil)
 
 		vk.GetPhysicalDeviceProperties(physical_device, &physical_device_properties)
 		vk.GetPhysicalDeviceFeatures(physical_device, &physical_device_features)
@@ -1336,14 +1201,14 @@ engine_init_physical_device :: proc(engine: ^Engine) {
 			REQUIRED_PHYSICAL_DEVICE_EXTENSIONS[:],
 		) {
 			log.info("Using", transmute(cstring)(&physical_device_properties.deviceName))
-			engine.vk_physical_device = physical_device
+			engine.physical_device = physical_device
 			break search_device
 		}
 	}
-	ensure(engine.vk_physical_device != nil)
+	assert(engine.physical_device != nil)
 
 	vk.GetPhysicalDeviceMemoryProperties(
-		engine.vk_physical_device,
+		engine.physical_device,
 		&physical_device_memory_properties,
 	)
 }
@@ -1356,11 +1221,11 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	//
 	queue_properties: []vk.QueueFamilyProperties
 	queue_count: u32
-	vk.GetPhysicalDeviceQueueFamilyProperties(engine.vk_physical_device, &queue_count, nil)
+	vk.GetPhysicalDeviceQueueFamilyProperties(engine.physical_device, &queue_count, nil)
 
 	queue_properties = make([]vk.QueueFamilyProperties, queue_count, context.temp_allocator)
 	vk.GetPhysicalDeviceQueueFamilyProperties(
-		engine.vk_physical_device,
+		engine.physical_device,
 		&queue_count,
 		raw_data(queue_properties),
 	)
@@ -1369,7 +1234,7 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 	// Grab the first queue with graphics capabilities
 	//
 
-	engine.vk_queue_index = bits.U32_MAX
+	engine.queue_index = bits.U32_MAX
 
 	for properties, index in queue_properties {
 		has_graphics := .GRAPHICS in properties.queueFlags
@@ -1377,24 +1242,24 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 
 		has_presentation: b32
 		vk.GetPhysicalDeviceSurfaceSupportKHR(
-			engine.vk_physical_device,
+			engine.physical_device,
 			u32(index),
-			engine.vk_surface,
+			engine.surface,
 			&has_presentation,
 		)
 
 		if has_graphics && has_transfer && has_presentation {
-			engine.vk_queue_index = u32(index)
+			engine.queue_index = u32(index)
 			break
 		}
 	}
 
-	ensure(engine.vk_queue_index != bits.U32_MAX, "Failed to find queue index for graphics queue")
+	assert(engine.queue_index != bits.U32_MAX, "Failed to find queue index for graphics queue")
 
 	queue_priority := f32(0.5)
 	queue_create_info := vk.DeviceQueueCreateInfo {
 		sType            = .DEVICE_QUEUE_CREATE_INFO,
-		queueFamilyIndex = engine.vk_queue_index,
+		queueFamilyIndex = engine.queue_index,
 		queueCount       = 1,
 		pQueuePriorities = &queue_priority,
 	}
@@ -1461,20 +1326,15 @@ engine_init_logical_device :: proc(engine: ^Engine) {
 		pEnabledFeatures        = &physical_device_features,
 	}
 
-	result = vk.CreateDevice(
-		engine.vk_physical_device,
-		&create_info,
-		engine.vk_alloc,
-		&engine.vk_device,
-	)
-	ensure(result == .SUCCESS)
-	ensure(engine.vk_device != nil)
+	result = vk.CreateDevice(engine.physical_device, &create_info, engine.alloc, &engine.device)
+	assert(result == .SUCCESS)
+	assert(engine.device != nil)
 
 	//
 	// Get the render/graphics queue
 	//
-	vk.GetDeviceQueue(engine.vk_device, engine.vk_queue_index, 0, &engine.vk_queue)
-	ensure(engine.vk_queue != nil)
+	vk.GetDeviceQueue(engine.device, engine.queue_index, 0, &engine.queue)
+	assert(engine.queue != nil)
 }
 
 engine_init_swapchain :: proc(engine: ^Engine) {
@@ -1486,21 +1346,21 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	{
 		count: u32
 		result = vk.GetPhysicalDeviceSurfaceFormatsKHR(
-			engine.vk_physical_device,
-			engine.vk_surface,
+			engine.physical_device,
+			engine.surface,
 			&count,
 			nil,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		formats := make([]vk.SurfaceFormatKHR, count, context.temp_allocator)
 		result = vk.GetPhysicalDeviceSurfaceFormatsKHR(
-			engine.vk_physical_device,
-			engine.vk_surface,
+			engine.physical_device,
+			engine.surface,
 			&count,
 			raw_data(formats),
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		desired_format := vk.SurfaceFormatKHR {
 			colorSpace = .SRGB_NONLINEAR,
@@ -1508,9 +1368,9 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		}
 
 		if slice.contains(formats, desired_format) {
-			engine.vk_swapchain_surface_format = desired_format
+			engine.swapchain_surface_format = desired_format
 		} else {
-			engine.vk_swapchain_surface_format = formats[0]
+			engine.swapchain_surface_format = formats[0]
 		}
 	}
 
@@ -1543,22 +1403,22 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	{
 		count: u32
 		result = vk.GetPhysicalDeviceSurfacePresentModesKHR(
-			engine.vk_physical_device,
-			engine.vk_surface,
+			engine.physical_device,
+			engine.surface,
 			&count,
 			nil,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		present_modes := make([]vk.PresentModeKHR, count, context.temp_allocator)
 
 		result = vk.GetPhysicalDeviceSurfacePresentModesKHR(
-			engine.vk_physical_device,
-			engine.vk_surface,
+			engine.physical_device,
+			engine.surface,
 			&count,
 			raw_data(present_modes),
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		// if slice.contains(present_modes, vk.PresentModeKHR.MAILBOX) {
 		// 	present_mode = .MAILBOX
@@ -1572,11 +1432,11 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	{
 		capabilities: vk.SurfaceCapabilitiesKHR
 		result = vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
-			engine.vk_physical_device,
-			engine.vk_surface,
+			engine.physical_device,
+			engine.surface,
 			&capabilities,
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 
 		//
 		// Set the pre transform for the images
@@ -1593,23 +1453,23 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		if max_images == 0 do max_images = bits.U32_MAX
 
 		if present_mode == .FIFO {
-			engine.vk_min_image_count = 2
+			engine.min_image_count = 2
 		} else if present_mode == .MAILBOX {
-			engine.vk_min_image_count = 3
+			engine.min_image_count = 3
 		}
 
-		engine.vk_min_image_count = clamp(engine.vk_min_image_count, min_images, max_images)
+		engine.min_image_count = clamp(engine.min_image_count, min_images, max_images)
 
 		//
 		// Set the extent to the framebuffer size
 		//
 		w, h := glfw.GetFramebufferSize(engine.window)
-		engine.vk_swapchain_extent.width = clamp(
+		engine.swapchain_extent.width = clamp(
 			u32(w),
 			capabilities.minImageExtent.width,
 			capabilities.maxImageExtent.width,
 		)
-		engine.vk_swapchain_extent.height = clamp(
+		engine.swapchain_extent.height = clamp(
 			u32(h),
 			capabilities.minImageExtent.height,
 			capabilities.maxImageExtent.height,
@@ -1620,11 +1480,11 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 	create_info := vk.SwapchainCreateInfoKHR {
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
 		flags            = {},
-		surface          = engine.vk_surface,
-		minImageCount    = engine.vk_min_image_count,
-		imageFormat      = engine.vk_swapchain_surface_format.format,
-		imageColorSpace  = engine.vk_swapchain_surface_format.colorSpace,
-		imageExtent      = engine.vk_swapchain_extent,
+		surface          = engine.surface,
+		minImageCount    = engine.min_image_count,
+		imageFormat      = engine.swapchain_surface_format.format,
+		imageColorSpace  = engine.swapchain_surface_format.colorSpace,
+		imageExtent      = engine.swapchain_extent,
 		imageArrayLayers = 1,
 		imageSharingMode = .EXCLUSIVE,
 		// queueFamilyIndexCount: u32,
@@ -1637,75 +1497,70 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		compositeAlpha   = {.OPAQUE},
 	}
 
-	result = vk.CreateSwapchainKHR(
-		engine.vk_device,
-		&create_info,
-		engine.vk_alloc,
-		&engine.vk_swapchain,
-	)
-	ensure(result == .SUCCESS)
-	ensure(engine.vk_swapchain != {})
+	result = vk.CreateSwapchainKHR(engine.device, &create_info, engine.alloc, &engine.swapchain)
+	assert(result == .SUCCESS)
+	assert(engine.swapchain != {})
 
 	//
 	// Retrieve swapchain images
 	//
 	{
 		count: u32
-		result = vk.GetSwapchainImagesKHR(engine.vk_device, engine.vk_swapchain, &count, nil)
-		ensure(result == .SUCCESS)
+		result = vk.GetSwapchainImagesKHR(engine.device, engine.swapchain, &count, nil)
+		assert(result == .SUCCESS)
 
-		resize(&engine.vk_swapchain_images, count)
-		resize(&engine.vk_swapchain_image_views, count)
+		resize(&engine.swapchain_images, count)
+		resize(&engine.swapchain_image_views, count)
 
 		result = vk.GetSwapchainImagesKHR(
-			engine.vk_device,
-			engine.vk_swapchain,
+			engine.device,
+			engine.swapchain,
 			&count,
-			raw_data(engine.vk_swapchain_images[:]),
+			raw_data(engine.swapchain_images[:]),
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
-	for image, i in engine.vk_swapchain_images {
+	for image, i in engine.swapchain_images {
 		create_info := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
 			image = image,
 			viewType = .D2,
-			format = engine.vk_swapchain_surface_format.format,
+			format = engine.swapchain_surface_format.format,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 
 		result = vk.CreateImageView(
-			engine.vk_device,
+			engine.device,
 			&create_info,
-			engine.vk_alloc,
-			&engine.vk_swapchain_image_views[i],
+			engine.alloc,
+			&engine.swapchain_image_views[i],
 		)
-		ensure(result == .SUCCESS)
+		assert(result == .SUCCESS)
 	}
 
 	//
 	// Create viewport and scissor
 	//
-	engine.vk_viewport = vk.Viewport {
+	engine.viewport = vk.Viewport {
 		x        = 0,
 		y        = 0,
-		width    = f32(engine.vk_swapchain_extent.width),
-		height   = f32(engine.vk_swapchain_extent.height),
+		width    = f32(engine.swapchain_extent.width),
+		height   = f32(engine.swapchain_extent.height),
 		minDepth = 0,
 		maxDepth = 1,
 	}
 
-	engine.vk_scissor = vk.Rect2D {
+	engine.scissor = vk.Rect2D {
 		offset = {},
-		extent = engine.vk_swapchain_extent,
+		extent = engine.swapchain_extent,
 	}
 
 	//
 	// Create the depth image
 	//
 
-	engine.vk_depth_image_format = find_format(
+	engine.depth_image_format = find_format(
 		engine,
 		candidates = {.D32_SFLOAT, .D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT},
 		tiling = .OPTIMAL,
@@ -1714,12 +1569,11 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 
 	image_create_info := vk.ImageCreateInfo {
 		sType = .IMAGE_CREATE_INFO,
-		flags = {},
 		imageType = .D2,
-		format = engine.vk_depth_image_format,
+		format = engine.depth_image_format,
 		extent = {
-			width = engine.vk_swapchain_extent.width,
-			height = engine.vk_swapchain_extent.height,
+			width = engine.swapchain_extent.width,
+			height = engine.swapchain_extent.height,
 			depth = 1,
 		},
 		mipLevels = 1,
@@ -1728,75 +1582,37 @@ engine_init_swapchain :: proc(engine: ^Engine) {
 		tiling = .OPTIMAL,
 		usage = {.DEPTH_STENCIL_ATTACHMENT},
 		sharingMode = .EXCLUSIVE,
-		queueFamilyIndexCount = 0,
-		pQueueFamilyIndices = nil,
 		initialLayout = .UNDEFINED,
 	}
 
-	result = vk.CreateImage(
-		engine.vk_device,
-		&image_create_info,
-		engine.vk_alloc,
-		&engine.vk_depth_image,
+	result = vk.CreateImage(engine.device, &image_create_info, engine.alloc, &engine.depth_image)
+	assert(result == .SUCCESS)
+
+	engine.depth_image_memory, result = gpu_malloc_image(
+		engine.device,
+		engine.depth_image,
+		engine.alloc,
+		{.DEVICE_LOCAL},
 	)
-	ensure(result == .SUCCESS)
-
-	memory_requirements: vk.MemoryRequirements
-	vk.GetImageMemoryRequirements(engine.vk_device, engine.vk_depth_image, &memory_requirements)
-
-	memory_type_index: u32
-	memory_type_index, result = device_get_memory_type_index(memory_requirements, {.DEVICE_LOCAL})
-	ensure(result == .SUCCESS)
-
-	alloc_info := vk.MemoryAllocateInfo {
-		sType           = .MEMORY_ALLOCATE_INFO,
-		allocationSize  = memory_requirements.size,
-		memoryTypeIndex = memory_type_index,
-	}
-	result = vk.AllocateMemory(
-		engine.vk_device,
-		&alloc_info,
-		engine.vk_alloc,
-		&engine.vk_depth_image_memory,
-	)
-	ensure(result == .SUCCESS)
-
-	//
-	// Bind the image to the memory
-	//
-	result = vk.BindImageMemory(
-		engine.vk_device,
-		engine.vk_depth_image,
-		engine.vk_depth_image_memory,
-		0,
-	)
-	ensure(result == .SUCCESS)
+	assert(result == .SUCCESS)
 
 	//
 	// Create the depth image view
 	//
 	create_view_info := vk.ImageViewCreateInfo {
 		sType = .IMAGE_VIEW_CREATE_INFO,
-		flags = {},
-		image = engine.vk_depth_image,
+		image = engine.depth_image,
 		viewType = .D2,
-		format = engine.vk_depth_image_format,
-		components = {.IDENTITY, .IDENTITY, .IDENTITY, .IDENTITY},
-		subresourceRange = {
-			aspectMask = {.DEPTH},
-			baseMipLevel = 0,
-			baseArrayLayer = 0,
-			levelCount = 1,
-			layerCount = 1,
-		},
+		format = engine.depth_image_format,
+		subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
 	}
 	result = vk.CreateImageView(
-		engine.vk_device,
+		engine.device,
 		&create_view_info,
-		engine.vk_alloc,
-		&engine.vk_depth_image_view,
+		engine.alloc,
+		&engine.depth_image_view,
 	)
-	ensure(result == .SUCCESS)
+	assert(result == .SUCCESS)
 }
 
 engine_recreate_swapchain :: proc(engine: ^Engine) {
@@ -1812,86 +1628,75 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 	//
 	// We want to destroy the current swapchain before creating a new one
 	//
-	assert(engine.vk_swapchain != 0)
-	vk.DeviceWaitIdle(engine.vk_device)
+	assert(engine.swapchain != 0)
+	vk.DeviceWaitIdle(engine.device)
 
-	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, engine.vk_alloc)
-	engine.vk_swapchain = 0
+	vk.DestroySwapchainKHR(engine.device, engine.swapchain, engine.alloc)
+	engine.swapchain = 0
 
-	for image_view in engine.vk_swapchain_image_views {
-		vk.DestroyImageView(engine.vk_device, image_view, engine.vk_alloc)
+	for image_view in engine.swapchain_image_views {
+		vk.DestroyImageView(engine.device, image_view, engine.alloc)
 	}
-	clear(&engine.vk_swapchain_image_views)
+	clear(&engine.swapchain_image_views)
 
-	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, engine.vk_alloc)
+	vk.FreeMemory(engine.device, engine.depth_image_memory, engine.alloc)
+	vk.DestroyImageView(engine.device, engine.depth_image_view, engine.alloc)
+	vk.DestroyImage(engine.device, engine.depth_image, engine.alloc)
 
 	engine_init_swapchain(engine)
 }
 
 engine_destroy :: proc(engine: ^Engine) {
-	vk.DeviceWaitIdle(engine.vk_device)
+	vk.DeviceWaitIdle(engine.device)
 
-	for buffer in engine.vk_model_buffer {
-		vk.DestroyBuffer(engine.vk_device, buffer.buffer, engine.vk_alloc)
-		vk.FreeMemory(engine.vk_device, buffer.memory, engine.vk_alloc)
+	gpu_arena_destroy(engine.device, engine.model_arena, engine.alloc)
+	gpu_arena_destroy(engine.device, engine.texture_arena, engine.alloc)
+
+	for buffer in engine.data_buffer do vk.DestroyBuffer(engine.device, buffer, engine.alloc)
+	for sampler in engine.image_sampler do vk.DestroySampler(engine.device, sampler, engine.alloc)
+
+	for texture in engine.texture_list {
+		vk.DestroyImageView(engine.device, texture.view, engine.alloc)
+		vk.DestroyImage(engine.device, texture.image, engine.alloc)
 	}
 
-	for sampler in engine.vk_image_sampler {
-		vk.DestroySampler(engine.vk_device, sampler, engine.vk_alloc)
-	}
+	vk.DestroyDescriptorPool(engine.device, engine.descriptor_pool, engine.alloc)
 
-	gpu_arena_destroy(engine.vk_device, engine.texture_arena, engine.vk_alloc)
+	vk.FreeMemory(engine.device, engine.depth_image_memory, engine.alloc)
+	vk.DestroyImageView(engine.device, engine.depth_image_view, engine.alloc)
+	vk.DestroyImage(engine.device, engine.depth_image, engine.alloc)
 
-	for texture_list in engine.vk_mesh_textures {
-		defer delete(texture_list)
+	vk.DestroyDescriptorSetLayout(engine.device, engine.set_layout, engine.alloc)
 
-		for image_by_material in texture_list {
-			for image in image_by_material {
-				vk.DestroyImageView(engine.vk_device, image.view, engine.vk_alloc)
-				vk.DestroyImage(engine.vk_device, image.image, engine.vk_alloc)
-			}
-		}
-	}
-
-	vk.DestroyDescriptorPool(engine.vk_device, engine.vk_descriptor_pool, engine.vk_alloc)
-
-	vk.FreeMemory(engine.vk_device, engine.vk_depth_image_memory, engine.vk_alloc)
-	vk.DestroyImageView(engine.vk_device, engine.vk_depth_image_view, engine.vk_alloc)
-	vk.DestroyImage(engine.vk_device, engine.vk_depth_image, engine.vk_alloc)
-
-	vk.DestroyDescriptorSetLayout(engine.vk_device, engine.vk_set_layout, engine.vk_alloc)
-
-	mapped_buffer_destroy(engine.vk_device, &engine.frame_data, engine.vk_alloc)
+	mapped_buffer_destroy(engine.device, &engine.frame_data, engine.alloc)
 
 	for tag in ModelTag do model.destroy(&engine.models[tag])
 
-	for sema in engine.vk_swapchain_semas {
-		vk.DestroySemaphore(engine.vk_device, sema, engine.vk_alloc)
+	for sema in engine.swapchain_semas {
+		vk.DestroySemaphore(engine.device, sema, engine.alloc)
 	}
 
-	vk.DestroySemaphore(engine.vk_device, engine.vk_present_complete_sema, engine.vk_alloc)
-	vk.DestroyFence(engine.vk_device, engine.vk_draw_fence, engine.vk_alloc)
+	vk.DestroySemaphore(engine.device, engine.present_complete_sema, engine.alloc)
+	vk.DestroyFence(engine.device, engine.draw_fence, engine.alloc)
 
-	queue_destroy(engine.vk_device, &engine.transfer_queue, engine.vk_alloc)
+	queue_destroy(engine.device, &engine.transfer_queue, engine.alloc)
 
 	// cmd buffer is destroyed when we destroy the pool (I think)
-	vk.DestroyCommandPool(engine.vk_device, engine.vk_cmdpool, engine.vk_alloc)
-	engine.vk_cmdbuf = {}
+	vk.DestroyCommandPool(engine.device, engine.cmdpool, engine.alloc)
+	engine.cmdbuf = {}
 
-	vk.DestroyPipelineCache(engine.vk_device, engine.vk_pipeline_cache, engine.vk_alloc)
-	vk.DestroyPipelineLayout(engine.vk_device, engine.vk_pipeline_layout, engine.vk_alloc)
-	vk.DestroyPipeline(engine.vk_device, engine.vk_render_pipeline, engine.vk_alloc)
-	vk.DestroyShaderModule(engine.vk_device, engine.vk_pipeline_shader, engine.vk_alloc)
-	for image_view in engine.vk_swapchain_image_views {
-		vk.DestroyImageView(engine.vk_device, image_view, engine.vk_alloc)
+	vk.DestroyPipelineCache(engine.device, engine.pipeline_cache, engine.alloc)
+	vk.DestroyPipelineLayout(engine.device, engine.pipeline_layout, engine.alloc)
+	vk.DestroyPipeline(engine.device, engine.render_pipeline, engine.alloc)
+	vk.DestroyShaderModule(engine.device, engine.pipeline_shader, engine.alloc)
+	for image_view in engine.swapchain_image_views {
+		vk.DestroyImageView(engine.device, image_view, engine.alloc)
 	}
-	vk.DestroySwapchainKHR(engine.vk_device, engine.vk_swapchain, engine.vk_alloc)
-	vk.DestroySurfaceKHR(engine.vk_instance, engine.vk_surface, engine.vk_alloc)
-	vk.DestroyDevice(engine.vk_device, engine.vk_alloc)
-	vk.DestroyDebugUtilsMessengerEXT(engine.vk_instance, engine.vk_messenger, engine.vk_alloc)
-	vk.DestroyInstance(engine.vk_instance, engine.vk_alloc)
+	vk.DestroySwapchainKHR(engine.device, engine.swapchain, engine.alloc)
+	vk.DestroySurfaceKHR(engine.instance, engine.surface, engine.alloc)
+	vk.DestroyDevice(engine.device, engine.alloc)
+	vk.DestroyDebugUtilsMessengerEXT(engine.instance, engine.messenger, engine.alloc)
+	vk.DestroyInstance(engine.instance, engine.alloc)
 
 	delete(engine.arena.data)
 

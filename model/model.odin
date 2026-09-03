@@ -150,6 +150,7 @@ bob_get_material_list :: proc(bob: Bob) -> []Material {
 
 find_material_by_mesh :: proc {
 	bob_find_material_mesh,
+	bob_find_material_mesh_index,
 	obj_find_material_mesh,
 }
 obj_find_material_mesh :: proc(obj: Obj, mesh: Mesh) -> (m: Material, found: bool) {
@@ -162,6 +163,9 @@ obj_find_material_mesh :: proc(obj: Obj, mesh: Mesh) -> (m: Material, found: boo
 	}
 
 	return {}, false
+}
+bob_find_material_mesh_index :: proc(bob: Bob, mesh_index: int) -> (m: Material, found: bool) {
+	return bob_find_material_mesh(bob, get_meshes(bob)[mesh_index])
 }
 bob_find_material_mesh :: proc(bob: Bob, mesh: Mesh) -> (m: Material, found: bool) {
 	name := get_slice_string(mesh.material, bob.data)

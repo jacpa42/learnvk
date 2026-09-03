@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:math/bits"
 import "core:mem"
 import "core:slice"
 import "model"
@@ -13,7 +14,7 @@ LOAD_MODELS := bit_set[ModelTag]{CURRENT_MODEL}
 PIPELINE :: Pipeline.shader
 
 MAX_DRAW_COMMANDS :: 256
-MAX_INSTANCES :: 100_000
+MAX_INSTANCES :: bits.U16_MAX
 ENGINE_ARENA_SIZE :: 16 * mem.Kilobyte
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
@@ -503,11 +504,11 @@ MaterialType :: enum {
 	specular,
 }
 
-Texture :: struct {
+Texture :: struct #all_or_none {
 	// This is the index into the shader's texture list where this texture is
-	image:              vk.Image,
-	view:               vk.ImageView,
-	shader_array_index: i32,
+	image: vk.Image,
+	view:  vk.ImageView,
+	tag:   MaterialType,
 }
 
 // odinfmt: disable
@@ -545,8 +546,8 @@ UniformFlag :: enum {
 FrameBufferData :: struct {
 	uniforms:            ShaderUniforms,
 	draw_commands:       [MAX_DRAW_COMMANDS]DrawInstancesCommand,
-	instance_transforms: [MAX_INSTANCES]InstanceTransforms,
-	instance_textures:   [MAX_INSTANCES]InstanceTextures,
+	instance_transforms: [MAX_INSTANCES]ShaderInstanceTransforms,
+	instance_textures:   [MAX_INSTANCES]ShaderInstanceTextures,
 }
 
 ShaderUniforms :: struct #all_or_none #align (16) {
@@ -562,30 +563,56 @@ ShaderUniforms :: struct #all_or_none #align (16) {
 
 MeshDrawInfo :: struct #all_or_none {
 	name: [dynamic; MAX_MESH_NAME_LEN]byte,
-	// how to draw the mesh
+	// How to draw the mesh
 	cmd:  DrawInstancesCommand,
 }
 
+IndexRange :: struct {
+	start, count: u32,
+}
+
+MeshInfo :: struct #all_or_none {
+	name:        string,
+	// into the index buffer
+	indicies:    IndexRange,
+	// indexes into the material list
+	material_id: MaterialID,
+}
+
+TextureID :: distinct i32
+NO_TEXTURE: TextureID : -1
+MaterialID :: distinct i32
+
+Material :: struct #all_or_none {
+	diffuse_id:  TextureID,
+	emissive_id: TextureID,
+	bump_id:     TextureID,
+	specular_id: TextureID,
+}
+
+TextureList :: []Texture
+
 DrawInstancesCommand :: struct #all_or_none {
-	vk_cmd: vk.DrawIndexedIndirectCommand,
+	cmd: vk.DrawIndexedIndirectCommand,
 
 	// whatever data we want here
 }
 
-InstanceTransforms :: struct #all_or_none #align (16) {
+ShaderInstanceTransforms :: struct #all_or_none #align (16) {
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
+	normal_matrix:     matrix[4, 4]f32,
 }
 
-InstanceTextures :: struct #all_or_none #align (16) {
-	diffuse:  i32,
-	emissive: i32,
-	bump:     i32,
-	specular: i32,
+ShaderInstanceTextures :: struct #all_or_none #align (16) {
+	diffuse_id:  TextureID,
+	emissive_id: TextureID,
+	bump_id:     TextureID,
+	specular_id: TextureID,
 }
 
 
-ModelBuffer :: enum {
+DataBufferTag :: enum {
 	// model data buffers
 	vertex,
 	index,
@@ -604,114 +631,107 @@ Engine :: struct {
 	//
 	// Windowing stuff
 	//
-	window:                      glfw.WindowHandle,
-	stop_rendering:              bool,
-	framebuffer_resized:         bool,
-	model_loaded:                bit_set[ModelTag],
-	models:                      [ModelTag]model.Bob,
+	window:                   glfw.WindowHandle,
+	stop_rendering:           bool,
+	framebuffer_resized:      bool,
+	model_loaded:             bit_set[ModelTag],
+	models:                   [ModelTag]model.Bob,
 
 	// used for all small allocations
-	arena:                       mem.Arena,
+	arena:                    mem.Arena,
 
 	//
 	// Vulkan stuff
 	//
-	vk_alloc:                    ^vk.AllocationCallbacks,
-	vk_messenger:                vk.DebugUtilsMessengerEXT,
-	vk_instance:                 vk.Instance,
+	alloc:                    ^vk.AllocationCallbacks,
+	messenger:                vk.DebugUtilsMessengerEXT,
+	instance:                 vk.Instance,
 
 	//
 	// Stuff for eye position
 	//
-	actions:                     bit_set[Action],
-	disable_rotate:              bool,
-	model_rotation:              f32,
-	delta_time:                  f32,
-	camera:                      Camera,
-	shader_flags:                bit_set[UniformFlag;u32],
+	actions:                  bit_set[Action],
+	disable_rotate:           bool,
+	model_rotation:           f32,
+	delta_time:               f32,
+	camera:                   Camera,
+	shader_flags:             bit_set[UniformFlag;u32],
 
 	//
 	// Physical and Logical device
 	//
-	vk_physical_device:          vk.PhysicalDevice,
-	vk_device:                   vk.Device,
-	vk_queue:                    vk.Queue,
-	vk_queue_index:              u32,
-	vk_surface:                  vk.SurfaceKHR,
+	physical_device:          vk.PhysicalDevice,
+	device:                   vk.Device,
+	queue:                    vk.Queue,
+	queue_index:              u32,
+	surface:                  vk.SurfaceKHR,
 
 	//
 	// Swapchain
 	//
-	vk_min_image_count:          u32,
-	vk_swapchain:                vk.SwapchainKHR,
-	vk_swapchain_surface_format: vk.SurfaceFormatKHR,
-	vk_swapchain_extent:         vk.Extent2D,
-	vk_image_index:              u32,
-	vk_swapchain_images:         [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
-	vk_swapchain_image_views:    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
+	min_image_count:          u32,
+	swapchain:                vk.SwapchainKHR,
+	swapchain_surface_format: vk.SurfaceFormatKHR,
+	swapchain_extent:         vk.Extent2D,
+	image_index:              u32,
+	swapchain_images:         [dynamic; MAX_SWAPCHAIN_IMAGES]vk.Image,
+	swapchain_image_views:    [dynamic; MAX_SWAPCHAIN_IMAGES]vk.ImageView,
 
 	//
 	// Descriptor sets
 	//
-	vk_descriptor_pool:          vk.DescriptorPool,
-	vk_set_layout:               vk.DescriptorSetLayout,
-	// one per mesh
-	vk_descriptor_set:           vk.DescriptorSet,
+	descriptor_pool:          vk.DescriptorPool,
+	set_layout:               vk.DescriptorSetLayout,
+	descriptor_set:           vk.DescriptorSet,
 
 	//
-	// Buffer which changes a bunch
+	// All our gpu memory is here
 	//
-	frame_data:                  MappedBuffer(FrameBufferData),
+	transfer_queue:           GpuTransferQueue,
+	frame_data:               MappedBuffer(FrameBufferData),
+	model_arena:              GpuArena,
+	texture_arena:            GpuArena,
 
 	//
-	// Model data
+	// Transfer queue
 	//
-	transfer_queue:              GpuTransferQueue,
-	// Holds all data for all models (indices and verticies)
-	vk_model_buffer:             [ModelBuffer]Buffer,
-	// For each mesh, I store the command to draw it. Then you can modify the
-	// `instanceCount` and the `firstInstance` to get the instance data for this
-	// mesh.
-	mesh_names:                  [ModelTag][]string,
-	mesh_draw_command:           [ModelTag][]DrawInstancesCommand,
 
 	//
-	// mesh textures
+	// Mesh data
 	//
-	texture_arena:               GpuArena,
-	// per model x per mesh
-	vk_mesh_textures:            [ModelTag][][MaterialType]Texture,
-
-	// one sampler for all images
-	vk_image_sampler:            [MaterialType]vk.Sampler,
+	data_buffer:              [DataBufferTag]vk.Buffer,
+	image_sampler:            [MaterialType]vk.Sampler,
+	mesh_data:                #soa[dynamic]MeshInfo,
+	material_list:            [dynamic]Material,
+	texture_list:             [dynamic]Texture,
 
 	//
 	// Depth image
 	//
-	vk_depth_image_format:       vk.Format,
-	vk_depth_image:              vk.Image,
-	vk_depth_image_view:         vk.ImageView,
-	vk_depth_image_memory:       vk.DeviceMemory,
+	depth_image_format:       vk.Format,
+	depth_image:              vk.Image,
+	depth_image_memory:       vk.DeviceMemory,
+	depth_image_view:         vk.ImageView,
 
 	//
 	// Pipeline
 	//
-	vk_pipeline_cache:           vk.PipelineCache,
-	vk_render_pipeline:          vk.Pipeline,
-	vk_viewport:                 vk.Viewport,
-	vk_scissor:                  vk.Rect2D,
-	vk_color_attachment:         vk.PipelineColorBlendAttachmentState,
-	vk_pipeline_dynamic_state:   [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
-	vk_pipeline_shader:          vk.ShaderModule,
-	vk_pipeline_layout:          vk.PipelineLayout,
+	pipeline_cache:           vk.PipelineCache,
+	render_pipeline:          vk.Pipeline,
+	viewport:                 vk.Viewport,
+	scissor:                  vk.Rect2D,
+	color_attachment:         vk.PipelineColorBlendAttachmentState,
+	pipeline_dynamic_state:   [dynamic; MAX_DYNAMIC_STATE]vk.DynamicState,
+	pipeline_shader:          vk.ShaderModule,
+	pipeline_layout:          vk.PipelineLayout,
 
 	//
 	// Command buffer
 	//
-	vk_cmdpool:                  vk.CommandPool,
-	vk_cmdbuf:                   vk.CommandBuffer,
-	vk_swapchain_semas:          [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
-	vk_present_complete_sema:    vk.Semaphore,
-	vk_draw_fence:               vk.Fence,
+	cmdpool:                  vk.CommandPool,
+	cmdbuf:                   vk.CommandBuffer,
+	swapchain_semas:          [MAX_SWAPCHAIN_IMAGES]vk.Semaphore,
+	present_complete_sema:    vk.Semaphore,
+	draw_fence:               vk.Fence,
 }
 

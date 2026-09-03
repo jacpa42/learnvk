@@ -1,6 +1,7 @@
 package learnvk
 
 import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
@@ -16,26 +17,26 @@ frame :: proc(engine: ^Engine) {
 	//
 	if engine.framebuffer_resized {
 		engine.framebuffer_resized = false
-		engine.vk_image_index = 0
+		engine.image_index = 0
 		engine_recreate_swapchain(engine)
 	}
 
 	//
 	// Before we begin our frame, we need to wait for the draw fence
 	//
-	result = vk.WaitForFences(engine.vk_device, 1, &engine.vk_draw_fence, true, bits.U64_MAX)
+	result = vk.WaitForFences(engine.device, 1, &engine.draw_fence, true, bits.U64_MAX)
 	ensure(result == .SUCCESS)
 
 	//
 	// Get the first image in the swapchain for the render loop
 	//
 	result = vk.AcquireNextImageKHR(
-		device = engine.vk_device,
-		swapchain = engine.vk_swapchain,
+		device = engine.device,
+		swapchain = engine.swapchain,
 		timeout = bits.U64_MAX,
-		semaphore = engine.vk_present_complete_sema,
+		semaphore = engine.present_complete_sema,
 		fence = {},
-		pImageIndex = &engine.vk_image_index,
+		pImageIndex = &engine.image_index,
 	)
 	#partial switch result {
 	case .SUCCESS, .SUBOPTIMAL_KHR:
@@ -52,7 +53,7 @@ frame :: proc(engine: ^Engine) {
 	// Reset the draw fences. Must happen *after* we are sure we will render to
 	// the current image view.
 	//
-	result = vk.ResetFences(engine.vk_device, 1, &engine.vk_draw_fence)
+	result = vk.ResetFences(engine.device, 1, &engine.draw_fence)
 	ensure(result == .SUCCESS)
 
 	//
@@ -67,7 +68,7 @@ frame :: proc(engine: ^Engine) {
 }
 
 engine_fill_cmd_buffer :: proc(engine: ^Engine) {
-	commandBuffer := engine.vk_cmdbuf
+	commandBuffer := engine.cmdbuf
 
 	//
 	// Begin recording the command buffer
@@ -85,7 +86,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	image_change_layout(
 		cmdbuf = commandBuffer,
-		image = engine.vk_swapchain_images[engine.vk_image_index],
+		image = engine.swapchain_images[engine.image_index],
 		old_layout = .UNDEFINED,
 		new_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		src_access = {},
@@ -97,7 +98,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 
 	defer image_change_layout(
 		cmdbuf = commandBuffer,
-		image = engine.vk_swapchain_images[engine.vk_image_index],
+		image = engine.swapchain_images[engine.image_index],
 		old_layout = .COLOR_ATTACHMENT_OPTIMAL,
 		new_layout = .PRESENT_SRC_KHR,
 		src_access = {.COLOR_ATTACHMENT_WRITE},
@@ -107,7 +108,6 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		aspect_mask = {.COLOR},
 	)
 
-
 	//
 	// Change the depth buffer to be optimal for a depth attachment
 	//
@@ -115,7 +115,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	image_change_layout(
 		cmdbuf = commandBuffer,
-		image = engine.vk_depth_image,
+		image = engine.depth_image,
 		old_layout = .UNDEFINED,
 		new_layout = .DEPTH_ATTACHMENT_OPTIMAL,
 		src_access = {},
@@ -130,16 +130,16 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	color_attachment_info := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = engine.vk_swapchain_image_views[engine.vk_image_index],
+		imageView = engine.swapchain_image_views[engine.image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
-		clearValue = vk.ClearValue{color = {float32 = [4]f32{0x02, 0x02, 0x02, 0xff} / 255}},
+		clearValue = vk.ClearValue{color = {float32 = [4]f32{0.01, 0.01, 0.01, 0.1}}},
 	}
 
 	depth_attachment_info := vk.RenderingAttachmentInfo {
 		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = engine.vk_depth_image_view,
+		imageView = engine.depth_image_view,
 		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
@@ -149,7 +149,7 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	render_info := vk.RenderingInfo {
 		sType                = .RENDERING_INFO,
 		flags                = {},
-		renderArea           = {{0, 0}, engine.vk_swapchain_extent},
+		renderArea           = {{0, 0}, engine.swapchain_extent},
 		layerCount           = 1,
 		viewMask             = 0,
 		colorAttachmentCount = 1,
@@ -174,9 +174,9 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Run the graphics pipeline
 	//
-	vk.CmdBindPipeline(commandBuffer, .GRAPHICS, engine.vk_render_pipeline)
-	vk.CmdSetViewport(commandBuffer, 0, 1, &engine.vk_viewport)
-	vk.CmdSetScissor(commandBuffer, 0, 1, &engine.vk_scissor)
+	vk.CmdBindPipeline(commandBuffer, .GRAPHICS, engine.render_pipeline)
+	vk.CmdSetViewport(commandBuffer, 0, 1, &engine.viewport)
+	vk.CmdSetScissor(commandBuffer, 0, 1, &engine.scissor)
 
 	//
 	// Bind vertex buffers
@@ -191,12 +191,12 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		commandBuffer = commandBuffer,
 		firstBinding = 0,
 		bindingCount = 1,
-		pBuffers = &engine.vk_model_buffer[.vertex].buffer,
+		pBuffers = &engine.data_buffer[.vertex],
 		pOffsets = &offset,
 	)
 	vk.CmdBindIndexBuffer(
 		commandBuffer = commandBuffer,
-		buffer = engine.vk_model_buffer[.index].buffer,
+		buffer = engine.data_buffer[.index],
 		offset = 0,
 		indexType = .UINT32,
 	)
@@ -204,10 +204,10 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	vk.CmdBindDescriptorSets(
 		commandBuffer = commandBuffer,
 		pipelineBindPoint = .GRAPHICS,
-		layout = engine.vk_pipeline_layout,
+		layout = engine.pipeline_layout,
 		firstSet = 0,
 		descriptorSetCount = 1,
-		pDescriptorSets = &engine.vk_descriptor_set,
+		pDescriptorSets = &engine.descriptor_set,
 		dynamicOffsetCount = 0,
 		pDynamicOffsets = nil,
 	)
@@ -235,24 +235,24 @@ engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
 		// command buffer.
 		//
 		waitSemaphoreCount   = 1,
-		pWaitSemaphores      = &engine.vk_present_complete_sema,
+		pWaitSemaphores      = &engine.present_complete_sema,
 		pWaitDstStageMask    = &vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
 
 		//
 		// The command buffers to execute
 		//
 		commandBufferCount   = 1,
-		pCommandBuffers      = &engine.vk_cmdbuf,
+		pCommandBuffers      = &engine.cmdbuf,
 
 		//
 		// These mutexs are locked for the duration of the submission/execution
 		// of the command buffers.
 		//
 		signalSemaphoreCount = 1,
-		pSignalSemaphores    = &engine.vk_swapchain_semas[engine.vk_image_index],
+		pSignalSemaphores    = &engine.swapchain_semas[engine.image_index],
 	}
 
-	result = vk.QueueSubmit(engine.vk_queue, 1, &submit_info, engine.vk_draw_fence)
+	result = vk.QueueSubmit(engine.queue, 1, &submit_info, engine.draw_fence)
 	ensure(result == .SUCCESS)
 
 	//
@@ -261,8 +261,8 @@ engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
 		swapchainCount     = 1,
-		pSwapchains        = &engine.vk_swapchain,
-		pImageIndices      = &engine.vk_image_index,
+		pSwapchains        = &engine.swapchain,
+		pImageIndices      = &engine.image_index,
 		pResults           = nil,
 
 		//
@@ -270,10 +270,10 @@ engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
 		// buffer finishes execution.
 		//
 		waitSemaphoreCount = 1,
-		pWaitSemaphores    = &engine.vk_swapchain_semas[engine.vk_image_index],
+		pWaitSemaphores    = &engine.swapchain_semas[engine.image_index],
 	}
 
-	result = vk.QueuePresentKHR(engine.vk_queue, &present_info)
+	result = vk.QueuePresentKHR(engine.queue, &present_info)
 	if result == .ERROR_OUT_OF_DATE_KHR || result == .SUBOPTIMAL_KHR {
 		engine_recreate_swapchain(engine)
 	} else {
@@ -308,48 +308,6 @@ engine_handle_input :: proc(engine: ^Engine) {
 }
 // odinfmt: enable
 
-#assert(PIPELINE == .shader)
-engine_make_uniforms :: proc(engine: ^Engine, uniforms: ^ShaderUniforms) {
-	//
-	// Engine setup uniforms
-	//
-
-	if !engine.disable_rotate {
-		engine.model_rotation = math.remainder(engine.model_rotation + engine.delta_time, math.TAU)
-	}
-
-	aspect :=
-		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
-
-	view_direction := camera_view_dir(&engine.camera)
-
-	screen_from_world :=
-		linalg.matrix4_perspective_f32(
-			fovy = math.to_radians_f32(45),
-			aspect = aspect,
-			far = 10,
-			near = 0.01,
-		) *
-		linalg.matrix4_look_at_f32(
-			eye = engine.camera.pos.xyz,
-			centre = engine.camera.pos.xyz + view_direction,
-			up = engine.camera.up,
-		)
-
-	uniforms^ = {
-		screen_from_world = screen_from_world,
-
-		//
-		camera_position   = engine.camera.pos,
-		light_position    = {0, 0, 100, 0},
-		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
-		ambient_light     = 0.1,
-		flags             = engine.shader_flags,
-	}
-
-	return
-}
-
 @(require_results)
 engine_make_framedata :: proc(
 	engine: ^Engine,
@@ -365,8 +323,7 @@ engine_make_framedata :: proc(
 		engine.model_rotation = math.remainder(engine.model_rotation + engine.delta_time, math.TAU)
 	}
 
-	aspect :=
-		f32(engine.vk_swapchain_extent.width) / f32(max(engine.vk_swapchain_extent.height, 1))
+	aspect := f32(engine.swapchain_extent.width) / f32(max(engine.swapchain_extent.height, 1))
 
 	view_direction := camera_view_dir(&engine.camera)
 
@@ -390,7 +347,7 @@ engine_make_framedata :: proc(
 		camera_position   = engine.camera.pos,
 		light_position    = {0, 0, 100, 0},
 		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
-		ambient_light     = 0.1,
+		ambient_light     = 0.05,
 		flags             = engine.shader_flags,
 	}
 
@@ -399,67 +356,85 @@ engine_make_framedata :: proc(
 	//
 	t := f32(glfw.GetTime() * 0.1)
 
-	instance_index: u32
-	for model_tag in (LOAD_MODELS & engine.model_loaded & {CURRENT_MODEL}) {
-		y := 0
-		x := 0
+	add_draw_cmd :: proc(
+		draw_cmd_list: []DrawInstancesCommand,
+		draw_cmd_index: ^u32,
+		instances: IndexRange,
+		indicies: IndexRange,
+	) {
+		defer draw_cmd_index^ += 1
 
-		world_from_model := linalg.matrix4_translate_f32({f32(x) * 1.1, f32(y) * 1.1, 0})
+		draw_cmd_list[draw_cmd_index^].cmd.firstInstance = instances.start
+		draw_cmd_list[draw_cmd_index^].cmd.instanceCount = instances.count
 
-		corner := engine.models[model_tag].header.corner
-		dim := engine.models[model_tag].header.dim
+		draw_cmd_list[draw_cmd_index^].cmd.firstIndex = indicies.start
+		draw_cmd_list[draw_cmd_index^].cmd.indexCount = indicies.count
+	}
+
+	add_instance :: proc(
+		t, x, y: f32,
+		corner: [3]f32 = 0,
+		dim: [3]f32 = 1,
+		material: Material,
+		instance_index: ^u32,
+	) -> (
+		transform: ShaderInstanceTransforms,
+		textures: ShaderInstanceTextures,
+	) {
+		defer instance_index^ += 1
+
+		world_from_model := linalg.matrix4_translate_f32({x * 1.1, y * 1.1, 0})
+
 		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001))
 		model_from_vertex *= linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
-		model_from_vertex *= linalg.matrix4_rotate_f32((f32(y) / 10 + t) * math.PI, {0, 1, 0})
-		model_from_vertex *= linalg.matrix4_rotate_f32((f32(x) / 10 + t) * math.PI, {1, 0, 0})
+		model_from_vertex *= linalg.matrix4_rotate_f32((y / 10 + t) * math.PI, {x, 1, 1})
+		model_from_vertex *= linalg.matrix4_rotate_f32((x / 10 + t) * math.PI, {y, 1, 1})
 
-		frame_data.instance_transforms[instance_index] = InstanceTransforms {
+		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
+
+		transform = ShaderInstanceTransforms {
 			world_from_model  = world_from_model,
 			model_from_vertex = model_from_vertex,
+			normal_matrix     = normal_matrix,
 		}
 
 		// TODO: Maintian a list of entities which we can copy mesh data from.
-		frame_data.instance_textures[instance_index] = InstanceTextures {
-			diffuse  = 0,
-			emissive = -1,
-			bump     = -1,
-			specular = -1,
+		textures = ShaderInstanceTextures {
+			diffuse_id  = material.diffuse_id,
+			emissive_id = material.emissive_id,
+			bump_id     = material.bump_id,
+			specular_id = material.specular_id,
 		}
 
-
-		// TODO: I want to filter out the meshes based on some rule. Not sure
-		// how to do that best.
-
-		//
-		// Set the instance number and instance count for the draw command
-		// in the mesh_draw_info thingie
-		//
-		for &cmd in engine.mesh_draw_command[model_tag] {
-			//
-			// Set the instance start and instance count
-			//
-			cmd.vk_cmd.firstInstance = 0
-			cmd.vk_cmd.instanceCount = 1
-		}
+		return
 	}
 
+	instance_index: u32
+	draw_cmd_index := &num_draw_commands
+	for material_id, mesh_index in engine.mesh_data.material_id[:len(engine.mesh_data)] {
 
-	// TODO: We don't actually need to write all the commands each frame, we can
-	// just write to specific draw commands in our memory mapped command list
-	// rather. Could be better? i have no idea how to reason about that
+		first_instance := instance_index
 
-	//
-	// copy over the draw commands the draw commands
-	//
-	for model_tag in (LOAD_MODELS & engine.model_loaded) {
+		for y in 0 ..< 5 {
+			for x in 0 ..< 5 {
+				corner := engine.models[CURRENT_MODEL].header.corner
+				dim := engine.models[CURRENT_MODEL].header.dim
 
-		for cmd, mesh_index in engine.mesh_draw_command[model_tag] {
-			fmt.eprintfln("draw mesh({}) model({}): %#v", mesh_index, model_tag, cmd)
-			frame_data.draw_commands[num_draw_commands] = cmd
-			num_draw_commands += 1
+				material := engine.material_list[material_id]
+
+				frame_data.instance_transforms[instance_index], frame_data.instance_textures[instance_index] =
+					add_instance(t, f32(x), f32(y), corner, dim, material, &instance_index)
+			}
 		}
 
+		add_draw_cmd(
+			frame_data.draw_commands[:],
+			draw_cmd_index,
+			IndexRange{first_instance, instance_index - first_instance},
+			engine.mesh_data.indicies[mesh_index],
+		)
 	}
+
 
 	return
 }

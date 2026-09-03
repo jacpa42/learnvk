@@ -1,15 +1,83 @@
 package learnvk
 
 import "base:runtime"
-import "core:fmt"
 import "core:log"
 import "core:math"
+import "core:math/bits"
+import "core:mem"
+import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:thread"
 import "model"
 import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
+
+engine_new_texture :: proc(
+	engine: ^Engine,
+	material_id: MaterialID,
+	tag: MaterialType,
+) -> (
+	texture_id: TextureID,
+) {
+	texture_id = TextureID(len(engine.texture_list))
+
+	switch tag {
+	case .diffuse:
+		engine.material_list[material_id].diffuse_id = texture_id
+	case .emissive:
+		engine.material_list[material_id].emissive_id = texture_id
+	case .bump:
+		engine.material_list[material_id].bump_id = texture_id
+	case .specular:
+		engine.material_list[material_id].specular_id = texture_id
+	}
+
+	// we allocate the image after we load the texture data
+	append(&engine.texture_list, Texture{image = 0, view = 0, tag = tag})
+
+	return
+}
+
+engine_new_material :: proc(engine: ^Engine) -> (material_id: MaterialID) {
+	material_id = MaterialID(len(engine.material_list))
+	append(
+		&engine.material_list,
+		Material {
+			diffuse_id = NO_TEXTURE,
+			emissive_id = NO_TEXTURE,
+			bump_id = NO_TEXTURE,
+			specular_id = NO_TEXTURE,
+		},
+	)
+
+	return
+}
+
+// NOTE: Name is copied!
+engine_append_mesh :: proc(
+	engine: ^Engine,
+	name: string,
+	#any_int index_count: u32,
+	material_id: MaterialID,
+) {
+	index_start: u32
+	if len(engine.mesh_data) > 0 {
+		last_appended := engine.mesh_data.indicies[len(engine.mesh_data) - 1]
+		index_start = last_appended.count + last_appended.count
+	}
+	append(
+		&engine.mesh_data,
+		MeshInfo {
+			name = name,
+			// into the index buffer
+			indicies = IndexRange{start = index_start, count = index_count},
+			// indexes into the material list
+			material_id = material_id,
+		},
+	)
+}
 
 @(require_results)
 engine_create_buffer :: proc(
@@ -68,7 +136,7 @@ find_format :: proc(
 ) -> vk.Format {
 	for format in candidates {
 		properties: vk.FormatProperties
-		vk.GetPhysicalDeviceFormatProperties(engine.vk_physical_device, format, &properties)
+		vk.GetPhysicalDeviceFormatProperties(engine.physical_device, format, &properties)
 
 		if (tiling == .LINEAR && features <= properties.linearTilingFeatures) ||
 		   (tiling == .OPTIMAL && features <= properties.optimalTilingFeatures) {
@@ -84,7 +152,7 @@ find_format :: proc(
 // Given the properties of the currently bound physical device, find the memory
 // type we will use for the buffer given the memory requirements.
 //
-device_get_memory_type_index :: proc "contextless" (
+find_memory_type_index :: proc "contextless" (
 	requirements: vk.MemoryRequirements,
 	desired_properties: vk.MemoryPropertyFlags,
 ) -> (
@@ -102,6 +170,7 @@ device_get_memory_type_index :: proc "contextless" (
 		}
 	}
 
+	type_index = bits.U32_MAX
 	result = vk.Result.ERROR_NOT_PERMITTED
 	return
 }
@@ -432,7 +501,11 @@ LoadTaskData :: struct {
 	// input
 	//
 	input:  struct #all_or_none {
-		texture:          ^Texture,
+		// This is so we know where to put this thing
+		material_id:      MaterialID,
+		texture_id:       TextureID,
+
+		//
 		texture_cpath:    cstring,
 		desired_channels: i32,
 		format:           vk.Format,
@@ -489,48 +562,202 @@ eat_load_task :: proc(task_array: []LoadTaskData) {
 	}
 }
 
-engine_define_texture_load_task :: proc(
-	load_tasks: ^[dynamic]LoadTaskData, // output,
+
+TexturePath :: cstring
+MaterialName :: string
+engine_append_material_load_task :: proc(
+	engine: ^Engine,
+	load_tasks: ^[dynamic]LoadTaskData,
+
+	// Used to deduplicate load tasks
+	texture_id_map: ^map[TexturePath]TextureID,
+	material_id_map: ^map[MaterialName]MaterialID,
 
 	// input
-	mesh_textures: ^[MaterialType]Texture,
-	this_model: Model,
 	model_tag: ModelTag,
-	mesh: model.Mesh,
+	mesh_index: int,
 ) {
+	this_model := engine.models[model_tag]
+
+	//
+	// Append the new mesh
+	//
+	mesh_name := model.get_mesh_name(this_model, mesh_index)
+	mesh_indices := model.get_mesh_indices(this_model, mesh_index)
+	engine_append_mesh(engine, mesh_name, len(mesh_indices), -1)
+
 	//
 	// Try to find the material type for this mesh
 	//
 
-	material, found := model.find_material_by_mesh(this_model, mesh)
-	if !found {
+	{
+		material_name: MaterialName = model.get_mesh_material_name(this_model, mesh_index)
+		material_id, ok := &material_id_map[material_name]
+
+		if ok {
+			engine.mesh_data[mesh_index].material_id = material_id^
+			return
+		}
+	}
+
+
+	//
+	// Otherwise load the material
+	//
+
+	material, ok := model.find_material_by_mesh(this_model, mesh_index)
+
+	if !ok {
 		log.warnf(
 			"Failed to find material for \"{}.{}\"",
 			model_tag,
-			model.get_mesh_name(this_model, mesh),
+			model.get_mesh_name(this_model, mesh_index),
 		)
+
 		return
 	}
 
 	//
+	// We found a new material. Add it to our material list
+	//
+	material_name: MaterialName = model.get_mesh_material_name(this_model, mesh_index)
+	material_id := engine_new_material(engine)
+	material_id_map[material_name] = material_id
+
+	engine.mesh_data[mesh_index].material_id = material_id
+
+	//
 	// Load all the material textures onto the gpu
 	//
-	for material_type in MaterialType {
+	for texture_type in MaterialType {
+		texture_path, desired_channels, texture_format := get_texture_details(
+			this_model,
+			material,
+			texture_type,
+		) or_continue
 
 		//
-		// Get the details for the texure
+		// Check if we have already loaded this texture
 		//
+		texture_id: ^TextureID
+		texture_id, ok = &texture_id_map[texture_path]
+		if ok {
+			switch texture_type {
+			case .diffuse:
+				engine.material_list[material_id].diffuse_id = texture_id^
+			case .emissive:
+				engine.material_list[material_id].emissive_id = texture_id^
+			case .bump:
+				engine.material_list[material_id].bump_id = texture_id^
+			case .specular:
+				engine.material_list[material_id].specular_id = texture_id^
+			}
+
+			continue
+
+		} else {
+		}
+
+		new_texture_id := engine_new_texture(engine, material_id, texture_type)
+		texture_id_map[texture_path] = new_texture_id
+
+		//
+		// We found a texture we haven't loaded yet
+		//
+
+		// TODO: continue setting up the texture loader to not be so shit
+
 		task: LoadTaskData
-
 		task.input = {
-			&mesh_textures[material_type],
-			get_texture_details(this_model, material, material_type) or_continue,
+			material_id      = material_id,
+			texture_id       = new_texture_id,
+			texture_cpath    = texture_path,
+			desired_channels = desired_channels,
+			format           = texture_format,
 		}
 
 		append(load_tasks, task)
 	}
 }
 
+//
+// Allocates load tasks with context.temp_allocator
+//
+engine_load_material_textures :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskData) {
+
+	//
+	// Initialize our mesh metadata arrays
+	//
+	arena := mem.arena_allocator(&engine.arena)
+	engine.mesh_data = make(#soa[dynamic]MeshInfo, length = 0, capacity = 64, allocator = arena)
+	engine.material_list = make([dynamic]Material, len = 0, cap = 128, allocator = arena)
+	engine.texture_list = make([dynamic]Texture, len = 0, cap = 512, allocator = arena)
+
+	//
+	// Define all the texture load tasks
+	//
+	{
+		tasks = make([dynamic]LoadTaskData, 0, 64, context.temp_allocator)
+
+		texture_id_map := make(map[TexturePath]TextureID)
+		defer delete(texture_id_map)
+		material_id_map := make(map[MaterialName]MaterialID)
+		defer delete(material_id_map)
+
+		for tag in engine.model_loaded {
+			num_meshes := len(model.get_meshes(engine.models[tag]))
+
+			for mesh_index in 0 ..< num_meshes do engine_append_material_load_task(engine, &tasks, &texture_id_map, &material_id_map, tag, mesh_index)
+		}
+	}
+
+	//
+	// Divy up the tasks
+	//
+	threads := make([]^thread.Thread, os.get_processor_core_count(), context.temp_allocator)
+	chunk_size := math.floor_div(len(tasks), len(threads) + 1)
+	num_tasks_consumed := 0
+
+	thread_index := 0
+	for num_tasks_consumed + chunk_size < len(tasks) && thread_index < len(threads) {
+		task_slice := tasks[num_tasks_consumed:num_tasks_consumed + chunk_size]
+		threads[thread_index] = thread.create_and_start_with_poly_data(
+			data = task_slice,
+			fn = eat_load_task,
+		)
+
+		thread_index += 1
+		num_tasks_consumed += len(task_slice)
+	}
+
+	//
+	// Eat the remainder on main thread
+	//
+	eat_load_task(tasks[num_tasks_consumed:])
+	for t in threads[:thread_index] do thread.destroy(t)
+
+	return
+}
+
+destroy_load_tasks :: proc(load_tasks: ^[dynamic]LoadTaskData) {
+	assert(load_tasks.allocator == context.temp_allocator)
+
+	defer load_tasks^ = {}
+
+	for t in load_tasks do if t.output.data_needs_free {
+		stb_image.image_free(raw_data(t.output.data))
+	}
+}
+
+//
+// Useful when you want to create an arena which needs to support a lot of
+// different memory types
+//
+refine_memory_requirement :: proc(req: ^vk.MemoryRequirements, new_req: vk.MemoryRequirements) {
+	req.alignment = max(req.alignment, new_req.alignment)
+	req.size += vk.DeviceSize(mem.align_forward_uint(uint(new_req.size), uint(req.alignment)))
+	req.memoryTypeBits &= new_req.memoryTypeBits
+}
 
 //
 // Gets the requirements for a buffer without actually creating one
