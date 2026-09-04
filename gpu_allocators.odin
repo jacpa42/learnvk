@@ -1,7 +1,6 @@
 package learnvk
 
 import "base:runtime"
-import "core:fmt"
 import "core:log"
 import "core:mem"
 import vk "vendor:vulkan"
@@ -12,13 +11,13 @@ GpuArena :: struct #all_or_none {
 	offset: int,
 }
 
-MappedBuffer :: struct($T: typeid) #all_or_none {
-	ptr:    ^T,
+Buffer :: struct #all_or_none {
 	memory: vk.DeviceMemory,
 	buffer: vk.Buffer,
 }
 
-Buffer :: struct #all_or_none {
+MappedBuffer :: struct($T: typeid) #all_or_none {
+	ptr:    ^T,
 	memory: vk.DeviceMemory,
 	buffer: vk.Buffer,
 }

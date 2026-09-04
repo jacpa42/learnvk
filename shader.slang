@@ -9,8 +9,8 @@ struct VertexOutput {
     float3 normal;
     float3 light_dir;
     float2 texcoord;
-    int    diffuse_id;
-};
+    uint   instance_id;
+}
 
 struct Uniforms {
     float4x4 screen_from_world;
@@ -44,44 +44,44 @@ Sampler2D                            textures[];
 [shader("vertex")]
 VertexOutput vertex(
     Vertex   ivertex,
-    uint instance_id: SV_InstanceID
+    uint instance_id: SV_InstanceID,
+    uint start: SV_StartInstanceLocation,
 ) {
     VertexOutput output;
 
-    InstanceTransforms itransforms = instance_transforms[instance_id];
-    InstanceTextures   itextures   = instance_textures[instance_id];
+    InstanceTransforms itransforms = instance_transforms[start+instance_id];
 
     float4 vertex        = float4(ivertex.pos, 1.0);
     float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
     float4 vertex_world  = mul(itransforms.world_from_model,  vertex_model);
-    float4 vertex_screen = mul(uniforms.screen_from_world, vertex_world);
+    float4 vertex_screen = mul(uniforms.screen_from_world,    vertex_world);
 
     output.pos = vertex_screen;
 
-    output.normal     = mul(float3x3(itransforms.normal_matrix), ivertex.normal);
-    output.light_dir  = normalize(uniforms.light_position.xyz - vertex_world.xyz);
-    output.texcoord   = ivertex.texcoord;
-    output.diffuse_id = itextures.diffuse_id;
+    output.normal      = normalize(mul(float3x3(itransforms.normal_matrix), ivertex.normal));
+    output.light_dir   = normalize(uniforms.light_position.xyz - vertex_world.xyz);
+    output.texcoord    = ivertex.texcoord;
+    output.instance_id = start+instance_id;
 
     return output;
 }
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
+    InstanceTextures itextures = instance_textures[input.instance_id];
+
     float4 col = uniforms.light_color * float4(
-        float3(max(
-            dot(input.light_dir, input.normal), 0.1
-        )),
+        float3(max(dot(input.light_dir, input.normal), 0.1)),
         1.0
     );
 
-    col.xyz += uniforms.ambient_light * uniforms.light_color.xyz;
+    col += uniforms.ambient_light * uniforms.light_color;
 
     //
     // diffuse
     //
-    if (input.diffuse_id >= 0) {
-        col *= textures[input.diffuse_id].Sample(input.texcoord);
+    if (itextures.diffuse_id >= 0) {
+        col *= textures[itextures.diffuse_id].Sample(input.texcoord);
     }
 
     return col;

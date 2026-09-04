@@ -1,5 +1,6 @@
 package learnvk
 
+import "core:fmt"
 import "core:mem"
 
 //
@@ -473,7 +474,8 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	// Load all our textures into memory. This is needed before we allocate gpu
 	// memory.
 	//
-	load_tasks := engine_load_material_textures(engine)
+	load_tasks := engine_define_load_tasks(engine)
+	engine_process_load_tasks(engine, load_tasks[:])
 	defer destroy_load_tasks(&load_tasks)
 
 	//
@@ -505,8 +507,7 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	//
 	// Initialize the textures
 	//
-	result = engine_init_textures(engine, load_tasks)
-	assert(result == .SUCCESS)
+	engine_init_textures(engine, load_tasks)
 
 	//
 	// Initialize the model buffers
@@ -676,12 +677,9 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 // At the end of this procedure, all my textures are defined in their proper
 // location.
 //
-engine_init_textures :: proc(
-	engine: ^Engine,
-	texture_load_tasks: [dynamic]LoadTaskData,
-) -> (
-	result: vk.Result,
-) {
+engine_init_textures :: proc(engine: ^Engine, texture_load_tasks: [dynamic]LoadTaskData) {
+	result: vk.Result
+
 	texture_arena_requirements := vk.MemoryRequirements {
 		memoryTypeBits = bits.U32_MAX,
 	}
@@ -697,12 +695,12 @@ engine_init_textures :: proc(
 		refine_memory_requirement(&texture_arena_requirements, req)
 	}
 
-	engine.texture_arena = gpu_arena_init(
+	engine.texture_arena, result = gpu_arena_init(
 		device = engine.device,
 		alloc = engine.alloc,
 		requirements = texture_arena_requirements,
 		required_properties = {.DEVICE_LOCAL},
-	) or_return
+	); assert(result == .SUCCESS)
 
 	//
 	// Create the images
@@ -722,12 +720,14 @@ engine_init_textures :: proc(
 			usage = {.SAMPLED},
 			sharingMode = .EXCLUSIVE,
 		}
-		vk.CreateImage(engine.device, &image_create_info, engine.alloc, &texture.image) or_return
+		result = vk.CreateImage(engine.device, &image_create_info, engine.alloc, &texture.image)
+		assert(result == .SUCCESS)
 
 		//
 		// Allocate the image and bind the memory to it
 		//
-		_ = gpu_arena_alloc_image(&engine.texture_arena, engine.device, texture.image) or_return
+		_, result = gpu_arena_alloc_image(&engine.texture_arena, engine.device, texture.image)
+		assert(result == .SUCCESS)
 
 		//
 		// Create the image view (after binding the memory)
@@ -739,12 +739,14 @@ engine_init_textures :: proc(
 			format = image_create_info.format,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		vk.CreateImageView(engine.device, &image_view_create_info, engine.alloc, &texture.view) or_return
+		result = vk.CreateImageView(engine.device, &image_view_create_info, engine.alloc, &texture.view)
+		assert(result == .SUCCESS)
 
 		//
 		// Append the upload task to the queue
 		//
-		queue_append_whole_image(&engine.transfer_queue, engine.device, engine.queue, texture.image, image_create_info.extent, t.output.data) or_return
+		result = queue_append_whole_image(&engine.transfer_queue, engine.device, engine.queue, texture.image, image_create_info.extent, t.output.data)
+		assert(result == .SUCCESS)
 	}
 
 	result = .SUCCESS
@@ -798,8 +800,8 @@ engine_init_model_buffers :: proc(engine: ^Engine) -> (result: vk.Result) {
 	//
 	// Create the buffers and allocate them on the model arena
 	//
-	for info, tag in buffer_info {
-		engine.data_buffer[tag] = engine_create_buffer(
+	for info, buffer_tag in buffer_info {
+		engine.data_buffer[buffer_tag] = engine_create_buffer(
 			engine.device,
 			engine.alloc,
 			info.size,
@@ -812,24 +814,35 @@ engine_init_model_buffers :: proc(engine: ^Engine) -> (result: vk.Result) {
 		_ = gpu_arena_alloc_buffer(
 			&engine.model_arena,
 			engine.device,
-			engine.data_buffer[tag],
+			engine.data_buffer[buffer_tag],
 		) or_return
 
 
 		// Upload all the data to them
-		upload_dest := engine.data_buffer[tag]
+		upload_dest := engine.data_buffer[buffer_tag]
 		upload_dest_offset: vk.DeviceSize
 
 		for model_tag in engine.model_loaded {
 			data: []byte
 			defer upload_dest_offset += vk.DeviceSize(slice.size(data))
 
-			switch tag {
+			switch buffer_tag {
 			case .vertex:
 				data = to_bytes(model.get_vertices(engine.models[model_tag]))
 			case .index:
 				data = to_bytes(model.get_all_indices(engine.models[model_tag]))
 			}
+
+			log.infof(
+				"Uploading model data {}.{} (size {}Mib) -> {:x}[{}:{}]",
+				model_tag,
+				buffer_tag,
+				f32(len(data)) / mem.Megabyte,
+				upload_dest,
+				upload_dest_offset,
+				upload_dest_offset + vk.DeviceSize(slice.size(data)),
+			)
+
 
 			queue_append_whole_buffer(
 				&engine.transfer_queue,
@@ -840,44 +853,10 @@ engine_init_model_buffers :: proc(engine: ^Engine) -> (result: vk.Result) {
 				data,
 			)
 		}
-
 	}
 
 	result = .SUCCESS
 	return
-}
-
-engine_init_arenas_and_buffers_and_images :: proc(
-	engine: ^Engine,
-	texture_load_tasks: [dynamic]LoadTaskData,
-) {
-	result: vk.Result
-
-	//
-	// Initialize the upload queue
-	//
-	queue_init(
-		queue = &engine.transfer_queue,
-		device = engine.device,
-		alloc = engine.alloc,
-		transfer_buf_size = STAGING_BUFFER_SIZE,
-		cmdpool = engine.cmdpool,
-	)
-
-	// TODO: Maybe this is not always possible? to get device local , host
-	// visible and host coherent?
-
-	//
-	// Create the per-frame mapped buffer
-	//
-	result = mapped_buffer_init(
-		device = engine.device,
-		mbuf = &engine.frame_data,
-		alloc = engine.alloc,
-		usage = {.UNIFORM_BUFFER, .INDIRECT_BUFFER, .STORAGE_BUFFER},
-		required_properties = {.DEVICE_LOCAL, .HOST_VISIBLE, .HOST_COHERENT},
-	)
-	assert(result == .SUCCESS)
 }
 
 engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
@@ -986,7 +965,6 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		binding: u32,
 		type: vk.DescriptorType,
 	) {
-
 		write := vk.WriteDescriptorSet {
 			sType           = .WRITE_DESCRIPTOR_SET,
 			dstSet          = set,
@@ -994,6 +972,15 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			descriptorType  = type,
 			descriptorCount = 1,
 			pBufferInfo     = buffer_info,
+		}
+
+		#partial switch type {
+		case .STORAGE_IMAGE:
+			align := physical_device_properties.limits.minStorageBufferOffsetAlignment
+			assert(mem.is_aligned(transmute(rawptr)(buffer_info.offset), int(align)))
+		case .UNIFORM_BUFFER:
+			align := physical_device_properties.limits.minUniformBufferOffsetAlignment
+			assert(mem.is_aligned(transmute(rawptr)(buffer_info.offset), int(align)))
 		}
 
 		vk.UpdateDescriptorSets(device, 1, &write, 0, nil)
@@ -1047,7 +1034,6 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			offset = mapped_buffer_get_offset(engine.frame_data, "uniforms"),
 			range  = size_of(engine.frame_data.ptr.uniforms),
 		}
-
 		configure_single_buffer(engine.device, &buffer_info, engine.descriptor_set, binding.binding, binding.descriptorType)
 
 	case .instance_transforms:

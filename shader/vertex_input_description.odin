@@ -322,9 +322,7 @@ shader_param_get_descriptor_type :: proc(shader_param: ShaderParameter) -> vulka
 		case .none:
 			assert(false)
 		case .texture2D:
-			if shader_param.type.combined do return .COMBINED_IMAGE_SAMPLER
-			if !shader_param.type.combined do return .SAMPLER
-
+			assert(false)
 		case .structuredBuffer:
 			return .STORAGE_BUFFER
 		}

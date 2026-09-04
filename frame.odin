@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
-import "model"
+import "core:math/rand"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -185,6 +185,18 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Draw all our meshes
 	//
+
+	vk.CmdBindDescriptorSets(
+		commandBuffer = commandBuffer,
+		pipelineBindPoint = .GRAPHICS,
+		layout = engine.pipeline_layout,
+		firstSet = 0,
+		descriptorSetCount = 1,
+		pDescriptorSets = &engine.descriptor_set,
+		dynamicOffsetCount = 0,
+		pDynamicOffsets = nil,
+	)
+
 	offset: vk.DeviceSize
 	vk.CmdBindVertexBuffers(
 		commandBuffer = commandBuffer,
@@ -200,23 +212,12 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		indexType = .UINT32,
 	)
 
-	vk.CmdBindDescriptorSets(
-		commandBuffer = commandBuffer,
-		pipelineBindPoint = .GRAPHICS,
-		layout = engine.pipeline_layout,
-		firstSet = 0,
-		descriptorSetCount = 1,
-		pDescriptorSets = &engine.descriptor_set,
-		dynamicOffsetCount = 0,
-		pDynamicOffsets = nil,
-	)
-
 	vk.CmdDrawIndexedIndirect(
 		commandBuffer = commandBuffer,
 		buffer = engine.frame_data.buffer,
 		offset = mapped_buffer_get_offset(engine.frame_data, "draw_commands"),
 		drawCount = num_draw_commands,
-		stride = size_of(DrawInstancesCommand),
+		stride = size_of(vk.DrawIndexedIndirectCommand),
 	)
 }
 
@@ -330,7 +331,7 @@ engine_make_framedata :: proc(
 		linalg.matrix4_perspective_f32(
 			fovy = math.to_radians_f32(45),
 			aspect = aspect,
-			far = 10,
+			far = 1000,
 			near = 0.01,
 		) *
 		linalg.matrix4_look_at_f32(
@@ -345,96 +346,121 @@ engine_make_framedata :: proc(
 		//
 		camera_position   = engine.camera.pos,
 		light_position    = {0, 0, 100, 0},
-		light_color       = [4]f32{0xff, 0xff, 0xff, 0xff} / 0xff,
+		light_color       = [4]f32{0x50, 0x60, 0x70, 0xff} / 0xff,
 		ambient_light     = 0.05,
 		flags             = engine.shader_flags,
 	}
 
-	//
-	// setup the instance data and draw commands
-	//
-	t := f32(glfw.GetTime() * 0.1)
-
 	add_draw_cmd :: proc(
-		draw_cmd_list: []DrawInstancesCommand,
+		draw_cmd_list: []vk.DrawIndexedIndirectCommand,
 		draw_cmd_index: ^u32,
 		instances: IndexRange,
-		indicies: IndexRange,
+		index_start: u32,
+		index_count: u32,
+		vertex_offset: i32,
 	) {
 		defer draw_cmd_index^ += 1
 
-		draw_cmd_list[draw_cmd_index^].cmd.firstInstance = instances.start
-		draw_cmd_list[draw_cmd_index^].cmd.instanceCount = instances.count
+		draw_cmd_list[draw_cmd_index^].firstInstance = instances.start
+		draw_cmd_list[draw_cmd_index^].instanceCount = instances.count
 
-		draw_cmd_list[draw_cmd_index^].cmd.firstIndex = indicies.start
-		draw_cmd_list[draw_cmd_index^].cmd.indexCount = indicies.count
+		draw_cmd_list[draw_cmd_index^].firstIndex = index_start
+		draw_cmd_list[draw_cmd_index^].indexCount = index_count
+		draw_cmd_list[draw_cmd_index^].vertexOffset = vertex_offset
 	}
 
-	add_instance :: proc(
-		t, x, y: f32,
-		corner: [3]f32 = 0,
-		dim: [3]f32 = 1,
-		material: Material,
-		instance_index: ^u32,
-	) -> (
-		transform: ShaderInstanceTransforms,
-		textures: ShaderInstanceTextures,
-	) {
-		defer instance_index^ += 1
-
-		world_from_model := linalg.matrix4_translate_f32({x * 1.1, y * 1.1, 0})
-
-		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001))
-		model_from_vertex *= linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
-		model_from_vertex *= linalg.matrix4_rotate_f32((y / 10 + t) * math.PI, {x, 1, 1})
-		model_from_vertex *= linalg.matrix4_rotate_f32((x / 10 + t) * math.PI, {y, 1, 1})
-
-		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
-
-		transform = ShaderInstanceTransforms {
-			world_from_model  = world_from_model,
-			model_from_vertex = model_from_vertex,
-			normal_matrix     = normal_matrix,
-		}
-
-		// TODO: Maintian a list of entities which we can copy mesh data from.
-		textures = ShaderInstanceTextures {
+	add_instance_material :: proc(material: Material, textures: ^ShaderInstanceTextures) {
+		textures^ = ShaderInstanceTextures {
 			diffuse_id  = material.diffuse_id,
 			emissive_id = material.emissive_id,
 			bump_id     = material.bump_id,
 			specular_id = material.specular_id,
 		}
+	}
+
+	add_instance_transforms :: proc(
+		t: f32,
+		pos: [3]f32,
+		imodel_from_vertex: matrix[4, 4]f32,
+		transform: ^ShaderInstanceTransforms,
+	) {
+
+		world_from_model: matrix[4, 4]f32 = 1
+		world_from_model *= linalg.matrix4_translate_f32(pos)
+
+		model_from_vertex: matrix[4, 4]f32 = 1
+		model_from_vertex *= imodel_from_vertex
+		model_from_vertex *= linalg.matrix4_rotate_f32((pos.y + t) / 10 * math.PI, {pos.x, 1, 1})
+		model_from_vertex *= linalg.matrix4_rotate_f32((pos.x + t) / 10 * math.PI, {pos.y, 1, 1})
+
+		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
+
+		transform^ = ShaderInstanceTransforms {
+			world_from_model  = world_from_model,
+			model_from_vertex = model_from_vertex,
+			normal_matrix     = normal_matrix,
+		}
 
 		return
 	}
 
-	instance_index: u32
-	draw_cmd_index := &num_draw_commands
-	for material_id, mesh_index in engine.mesh_data.material_id[:len(engine.mesh_data)] {
+	//
+	// setup the instance data and draw commands
+	//
+	t := f32(glfw.GetTime())
 
-		first_instance := instance_index
+	space_size: [3]i32 = {5, 5, 5}
 
-		for y in 0 ..< 5 {
-			for x in 0 ..< 5 {
-				corner := engine.models[CURRENT_MODEL].header.corner
-				dim := engine.models[CURRENT_MODEL].header.dim
+	state := rand.Xoshiro256_Random_State{{1, 2, 3, 4}}
+	context.random_generator = rand.xoshiro256_random_generator(&state)
 
-				material := NO_MATERIAL
-				if material_id >= 0 do material = engine.material_list[material_id]
+	seen := make(map[[3]i32]struct{})
+	defer delete(seen)
 
-				frame_data.instance_transforms[instance_index], frame_data.instance_textures[instance_index] =
-					add_instance(t, f32(x), f32(y), corner, dim, material, &instance_index)
-			}
-		}
+	num_instances: u32
+	for mesh in engine.mesh_data {
 
-		add_draw_cmd(
+		first_instance := num_instances
+		defer add_draw_cmd(
 			frame_data.draw_commands[:],
-			draw_cmd_index,
-			IndexRange{first_instance, instance_index - first_instance},
-			engine.mesh_data.indicies[mesh_index],
+			&num_draw_commands,
+			instances = IndexRange{first_instance, num_instances - first_instance},
+			index_start = mesh.model_data.index_start,
+			index_count = mesh.model_data.index_count,
+			vertex_offset = mesh.model_data.vertex_offset,
 		)
-	}
 
+		for _ in 0 ..< 10 {
+
+			loc: [3]i32; for {
+				if loc not_in seen {
+					seen[loc] = {}
+					break
+				}
+
+				loc = [3]i32 {
+					rand.int32_range(-space_size.x, space_size.x),
+					rand.int32_range(-space_size.y, space_size.y),
+					rand.int32_range(-space_size.z, space_size.z),
+				}
+			}
+
+			defer num_instances += 1
+
+			add_instance_transforms(
+				t,
+				{1.5 * f32(loc.x), 1.5 * f32(loc.y), 1.5 * f32(loc.z)},
+				mesh.model_from_vertex,
+				&frame_data.instance_transforms[num_instances],
+			)
+
+			add_instance_material(
+				engine.material_list[mesh.material_id],
+				&frame_data.instance_textures[num_instances],
+			)
+
+		}
+	}
 
 	return
 }

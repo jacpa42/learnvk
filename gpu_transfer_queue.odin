@@ -1,5 +1,6 @@
 package learnvk
 
+import "core:log"
 import "core:mem"
 import "core:slice"
 import vk "vendor:vulkan"
@@ -7,10 +8,11 @@ import vk "vendor:vulkan"
 GpuTransferQueue :: struct {
 	buffer:    vk.Buffer,
 	memory:    vk.DeviceMemory,
-	mmap:      []byte,
+	ptr:       [^]byte,
 
 	// how much memory we have copied to the transfer buffer
 	reserved:  int,
+	size:      int,
 
 	// lil command buffer for sending shit over
 	recording: bool,
@@ -26,7 +28,7 @@ CopyOp :: struct {
 
 @(private = "file")
 queue_cap :: proc(queue: ^GpuTransferQueue) -> int {
-	return max(0, len(queue.mmap) - queue.reserved)
+	return max(0, queue.size - queue.reserved)
 }
 
 queue_allocate_chunk :: proc(
@@ -39,14 +41,12 @@ queue_allocate_chunk :: proc(
 ) {
 	assert(chunk_size > 0, loc = loc)
 
-	align := physical_device_properties.limits.optimalBufferCopyOffsetAlignment
-	if align == 0 do align = 16
+	align := max(1, physical_device_properties.limits.optimalBufferCopyOffsetAlignment)
 
 	queue.reserved = mem.align_forward_int(queue.reserved, int(align))
-
 	if queue_cap(queue) < chunk_size do return
 
-	chunk = queue.mmap[queue.reserved:queue.reserved + chunk_size]
+	chunk = queue.ptr[queue.reserved:queue.reserved + chunk_size]
 
 	// the offset into the buffer is just the offset of the next aligned pointer
 	offset = vk.DeviceSize(queue.reserved)
@@ -87,6 +87,8 @@ queue_append_whole_buffer :: proc(
 		written += write_size
 		offset += write_size
 	}
+
+	assert(written == len(data))
 }
 
 queue_append_buffer :: proc(
@@ -112,11 +114,18 @@ queue_append_buffer :: proc(
 	}
 
 	written = min(queue_cap(queue), len(data))
+	needs_flush = (written <= slice.size(data))
+
+	if written <= 0 {
+		written = 0
+		needs_flush = true
+		return
+	}
 
 	gpu_copy_dest, srcOffset := queue_allocate_chunk(queue, written)
 	assert(gpu_copy_dest != nil, loc = loc)
 
-	mem.copy_non_overlapping(raw_data(gpu_copy_dest), raw_data(data[:]), written)
+	mem.copy_non_overlapping(dst = raw_data(gpu_copy_dest), src = raw_data(data[:]), len = written)
 
 	region := vk.BufferCopy {
 		srcOffset = srcOffset,
@@ -132,7 +141,6 @@ queue_append_buffer :: proc(
 		pRegions = &region,
 	)
 
-	needs_flush = (written < slice.size(data))
 	return
 }
 
@@ -142,13 +150,14 @@ AppendImageAction :: enum {
 	buffer_too_small,
 }
 
+@(private = "file")
 queue_can_append_image :: proc(
 	queue: ^GpuTransferQueue,
 	#any_int data_size: int,
 ) -> AppendImageAction {
 	if queue_cap(queue) >= data_size {
 		return .yes
-	} else if slice.size(queue.mmap) >= data_size {
+	} else if queue.size >= data_size {
 		return .after_flush
 	} else {
 		return .buffer_too_small
@@ -177,6 +186,12 @@ queue_append_whole_image :: proc(
 		return queue_append_image(queue, image, image_extent, image_data, loc = loc)
 
 	case .buffer_too_small:
+		log.errorf(
+			"{} queue size needs to be at least {} (current {})",
+			loc,
+			slice.size(image_data),
+			queue.size,
+		)
 		return .ERROR_OUT_OF_DEVICE_MEMORY
 	}
 
@@ -201,7 +216,7 @@ queue_append_image :: proc(
 	assert(image_extent.height * image_extent.width * image_extent.depth != 0, loc = loc)
 	assert(image_data != nil, loc = loc)
 	assert(
-		slice.size(queue.mmap) >= slice.size(image_data),
+		queue.size >= slice.size(image_data),
 		"Transfer buffer is too small to upload this image",
 		loc = loc,
 	)
@@ -302,7 +317,6 @@ queue_append_image :: proc(
 		)
 	}
 
-
 	result = .SUCCESS
 	return
 }
@@ -379,7 +393,8 @@ queue_init :: proc(
 		ppData = &data,
 	) or_return
 
-	queue.mmap = ([^]byte)(data)[:transfer_buf_size]
+	queue.ptr = ([^]byte)(data)
+	queue.size = int(transfer_buf_size)
 
 	//
 	// Create the command buffer

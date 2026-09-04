@@ -4,9 +4,11 @@ import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:math/bits"
+import "core:math/linalg"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:thread"
 import "model"
@@ -47,24 +49,31 @@ engine_new_material :: proc(engine: ^Engine) -> (material_id: MaterialID) {
 	return
 }
 
-// NOTE: Name is copied!
-engine_append_mesh :: proc(
+// NOTE: Name is copied, not cloned
+engine_new_mesh :: proc(
 	engine: ^Engine,
 	name: string,
+	model_from_vertex: matrix[4, 4]f32,
 	#any_int index_count: u32,
+	#any_int vertex_offset: i32,
 	material_id: MaterialID,
 ) {
 	index_start: u32
 	if len(engine.mesh_data) > 0 {
-		last_appended := engine.mesh_data.indicies[len(engine.mesh_data) - 1]
-		index_start = last_appended.count + last_appended.count
+		last_appended := engine.mesh_data.model_data[len(engine.mesh_data) - 1]
+		index_start = last_appended.index_start + last_appended.index_count
 	}
 	append(
 		&engine.mesh_data,
 		MeshInfo {
 			name = name,
 			// into the index buffer
-			indicies = IndexRange{start = index_start, count = index_count},
+			model_from_vertex = model_from_vertex,
+			model_data = {
+				index_start = index_start,
+				index_count = index_count,
+				vertex_offset = vertex_offset,
+			},
 			// indexes into the material list
 			material_id = material_id,
 		},
@@ -433,6 +442,7 @@ make_or_clear :: proc(item: ^[dynamic]$T) {
 	}
 }
 
+@(require_results)
 get_texture_details :: proc(
 	m: Model,
 	mtl: model.Material,
@@ -554,163 +564,153 @@ eat_load_task :: proc(task_array: []LoadTaskData) {
 	}
 }
 
+engine_define_load_tasks :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskData) {
+	tasks = make([dynamic]LoadTaskData, 0, cap(engine.texture_list), context.temp_allocator)
 
-//
-// TODO: rewrite this because it's unreadable garbage:
-//
-// 1. We need to load all the textures
-// 2. Figure out which textures go to what materials
-// 3. Allow for the same texture to be mapped to different material types in
-//    different materials
-// 4. Define all the meshes in the model with their names and indicies.
-//
-TexturePath :: cstring
-MaterialName :: string
-engine_append_material_load_task :: proc(
-	engine: ^Engine,
-	load_tasks: ^[dynamic]LoadTaskData,
-
-	// Used to deduplicate load tasks
-	texture_id_map: ^map[TexturePath]TextureID,
-	material_id_map: ^map[MaterialName]MaterialID,
-
-	// input
-	model_tag: ModelTag,
-	mesh_index: int,
-) {
-	this_model := engine.models[model_tag]
-
-	//
-	// Append the new mesh
-	//
-	mesh_name := model.get_mesh_name(this_model, mesh_index)
-	mesh_indices := model.get_mesh_indices(this_model, mesh_index)
-	engine_append_mesh(engine, mesh_name, len(mesh_indices), -1)
-
-	//
-	// Try to find the material type for this mesh
-	//
-
-	{
-		material_name: MaterialName = model.get_mesh_material_name(this_model, mesh_index)
-		material_id, ok := &material_id_map[material_name]
-
-		if ok {
-			engine.mesh_data[mesh_index].material_id = material_id^
-			return
-		}
-	}
-
-
-	//
-	// Otherwise load the material
-	//
-
-	material, ok := model.find_material_by_mesh(this_model, mesh_index)
-
-	if !ok {
-		log.warnf(
-			"Failed to find material for \"{}.{}\"",
-			model_tag,
-			model.get_mesh_name(this_model, mesh_index),
-		)
-
-		return
-	}
-
-	//
-	// We found a new material. Add it to our material list
-	//
-	material_name: MaterialName = model.get_mesh_material_name(this_model, mesh_index)
-	material_id := engine_new_material(engine)
-	material_id_map[material_name] = material_id
-
-	engine.mesh_data[mesh_index].material_id = material_id
-
-	//
-	// Load all the material textures onto the gpu
-	//
-	for texture_type in MaterialType {
-		texture_path, desired_channels, texture_format := get_texture_details(
-			this_model,
-			material,
-			texture_type,
-		) or_continue
-
-		//
-		// Check if we have already loaded this texture
-		//
-		texture_id: ^TextureID
-		texture_id, ok = &texture_id_map[texture_path]
-		if ok {
-			switch texture_type {
-			case .diffuse:
-				engine.material_list[material_id].diffuse_id = texture_id^
-			case .emissive:
-				engine.material_list[material_id].emissive_id = texture_id^
-			case .bump:
-				engine.material_list[material_id].bump_id = texture_id^
-			case .specular:
-				engine.material_list[material_id].specular_id = texture_id^
-			}
-
-			continue
-
-		} else {
-		}
-
-		new_texture_id := engine_new_texture(engine, material_id, texture_type)
-		texture_id_map[texture_path] = new_texture_id
-
-		//
-		// We found a texture we haven't loaded yet
-		//
-
-		// TODO: continue setting up the texture loader to not be so shit
-
-		task: LoadTaskData
-		task.input = {
-			material_id      = material_id,
-			texture_id       = new_texture_id,
-			texture_cpath    = texture_path,
-			desired_channels = desired_channels,
-			format           = texture_format,
-		}
-
-		append(load_tasks, task)
-	}
-}
-
-//
-// Allocates load tasks with context.temp_allocator
-//
-engine_load_material_textures :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskData) {
+	context.allocator = mem.arena_allocator(&engine.arena)
 
 	//
 	// Initialize our mesh metadata arrays
 	//
-	arena := mem.arena_allocator(&engine.arena)
-	engine.mesh_data = make(#soa[dynamic]MeshInfo, length = 0, capacity = 64, allocator = arena)
-	engine.material_list = make([dynamic]Material, len = 0, cap = 128, allocator = arena)
-	engine.texture_list = make([dynamic]Texture, len = 0, cap = 512, allocator = arena)
+	engine.mesh_data = make(#soa[dynamic]MeshInfo, length = 0, capacity = 64)
+	engine.material_list = make([dynamic]Material, len = 0, cap = 128)
+	engine.texture_list = make([dynamic]Texture, len = 0, cap = 512)
+
+	TexturePath :: cstring
+	MaterialName :: string
+
+	texture_id_map := make(
+		map[TexturePath]TextureID,
+		cap(engine.texture_list),
+		context.temp_allocator,
+	)
+	material_id_map := make(
+		map[MaterialName]MaterialID,
+		cap(engine.material_list),
+		context.temp_allocator,
+	)
+
+	// Append a stub material
+	stub_material := engine_new_material(engine)
 
 	//
-	// Define all the texture load tasks
+	// Add all the meshes to the mesh_data soa array. We append them with
+	// the -1 material index which allows us to catch out of bounds accesses
+	// if we don't define it later
 	//
-	{
-		tasks = make([dynamic]LoadTaskData, 0, 64, context.temp_allocator)
 
-		texture_id_map := make(map[TexturePath]TextureID)
-		defer delete(texture_id_map)
-		material_id_map := make(map[MaterialName]MaterialID)
-		defer delete(material_id_map)
+	// FIX: For some reason, multi model meshes do not render correctly :(
+	// I think it something to do with the `vertex_offset` variable
 
-		for tag in engine.model_loaded {
-			num_meshes := len(model.get_meshes(engine.models[tag]))
+	vertex_offset := 0
+	for tag in engine.model_loaded {
 
-			for mesh_index in 0 ..< num_meshes do engine_append_material_load_task(engine, &tasks, &texture_id_map, &material_id_map, tag, mesh_index)
+		defer vertex_offset += len(model.get_vertices(engine.models[tag]))
+
+		dim := engine.models[tag].header.dim
+		corner := engine.models[tag].header.corner
+		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001))
+		model_from_vertex *= linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
+
+		for mesh in model.get_meshes(engine.models[tag]) {
+			mesh_name := model.get_mesh_name(engine.models[tag], mesh)
+			mesh_indices := model.get_mesh_indices(engine.models[tag], mesh)
+
+			engine_new_mesh(
+				engine,
+				strings.clone(mesh_name),
+				model_from_vertex,
+				len(mesh_indices),
+				vertex_offset,
+				-1,
+			)
 		}
 	}
+
+	mesh_data_index: int
+	for model_tag in engine.model_loaded do for mesh in model.get_meshes(engine.models[model_tag]) {
+		defer mesh_data_index += 1
+
+		//
+		// Find the material for this mesh
+		//
+		mtl, mesh_has_material := model.find_material_by_mesh(engine.models[model_tag], mesh)
+		if !mesh_has_material {
+			log.warnf("{}.{} has no material", model_tag, model.get_mesh_name(engine.models[model_tag], mesh))
+			engine.mesh_data[mesh_data_index].material_id = stub_material
+			continue
+		}
+
+		mtl_name := model.get_material_string(engine.models[model_tag], mtl, .name)
+		material_id, material_already_loaded := material_id_map[mtl_name]
+
+		mesh_material_ptr: ^Material
+
+		defer log.infof("{}.{} -> MaterialID({})", model_tag, model.get_mesh_name(engine.models[model_tag], mesh), material_id)
+
+		if !material_already_loaded {
+			// Create a new material slot.
+			material_id = engine_new_material(engine)
+			material_id_map[mtl_name] = material_id
+			engine.mesh_data[mesh_data_index].material_id = material_id
+			mesh_material_ptr = &engine.material_list[material_id]
+		} else {
+			// We have already loaded this material. Just set the mesh
+			// material_id and continue the outer loop
+			engine.mesh_data[mesh_data_index].material_id = material_id
+			continue
+		}
+
+		assert(mesh_material_ptr != nil)
+
+		//
+		// We haven't loaded this material yet, create the texture load tasks
+		//
+		for tt in MaterialType {
+			path, channels, format := get_texture_details(engine.models[model_tag], mtl, tt) or_continue
+
+			texture_id, texture_already_defined := texture_id_map[path]
+			if texture_already_defined {
+				switch tt {
+				case .diffuse:
+					mesh_material_ptr.diffuse_id = texture_id
+				case .emissive:
+					mesh_material_ptr.emissive_id = texture_id
+				case .bump:
+					mesh_material_ptr.bump_id = texture_id
+				case .specular:
+					mesh_material_ptr.specular_id = texture_id
+				}
+			} else {
+
+				texture_id = engine_new_texture(engine, material_id, tt)
+				texture_id_map[path] = texture_id
+
+				append(&tasks, LoadTaskData {
+					input = {
+						material_id      = material_id,
+						texture_id       = texture_id,
+
+						//
+						texture_cpath    = path,
+						desired_channels = channels,
+						format           = format,
+					},
+				})
+
+				log.infof("Material({}).{} = {} ({})", material_id, tt, texture_id, path)
+			}
+		}
+	}
+
+	return
+}
+
+
+//
+// Allocates load tasks with context.temp_allocator
+//
+engine_process_load_tasks :: proc(engine: ^Engine, tasks: []LoadTaskData) {
 
 	//
 	// Divy up the tasks
