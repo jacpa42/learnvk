@@ -6,6 +6,8 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
+MTL_DEBUG_LOG :: true
+
 @(require_results)
 mtl_load :: proc(mtl: Mtl, path: string) -> (result: Result) {
 	if len(path) == 0 {
@@ -28,10 +30,10 @@ mtl_load :: proc(mtl: Mtl, path: string) -> (result: Result) {
 }
 
 mtl_load_memory :: proc(m: Mtl, data: []byte) -> (result: Result) {
-
 	starts_with := strings.starts_with
 
-	mat: ^Material
+	stub_mat: Material
+	mat: ^Material = &stub_mat
 
 	line_iter := string(data)
 	for next_line in strings.split_lines_iterator(&line_iter) {
@@ -45,7 +47,16 @@ mtl_load_memory :: proc(m: Mtl, data: []byte) -> (result: Result) {
 
 		if line[0] == '#' {continue}
 
-		if starts_with(line, "newmtl") {
+		if starts_with(line, "newmtl ") {
+
+			when MTL_DEBUG_LOG {
+				for s, t in mat.strings {
+					if s.size > 0 {
+						log.debugf("{} = {}", t, string(m.strings[s.start:s.start + s.size]))
+					}
+				}
+			}
+
 			mat = mtl_new_material(m)
 			mat.strings[.name] = mtl_new_string(m, noprefix)
 
@@ -53,96 +64,97 @@ mtl_load_memory :: proc(m: Mtl, data: []byte) -> (result: Result) {
 			// Float values
 			//
 
-		} else if starts_with(line, "Ns") {
+		} else if starts_with(line, "Ns ") {
 			mat.Ns = parse_v1(noprefix) or_return
 
-		} else if starts_with(line, "Ni") {
+		} else if starts_with(line, "Ni ") {
 			mat.Ni = parse_v1(noprefix) or_return
 
-		} else if starts_with(line, "d") {
+		} else if starts_with(line, "d ") {
 			mat.d = parse_v1(noprefix) or_return
 
-		} else if starts_with(line, "Tr") {
+		} else if starts_with(line, "Tr ") {
 			mat.Tr = parse_v1(noprefix) or_return
 
 			//
 			// Floatx3 values
 			//
 
-		} else if starts_with(line, "Tf") {
+		} else if starts_with(line, "Tf ") {
 			mat.Tf.x, mat.Tf.y, mat.Tf.z = parse_v3(noprefix) or_return
 
-		} else if starts_with(line, "Ka") {
+		} else if starts_with(line, "Ka ") {
 			mat.Ka.x, mat.Ka.y, mat.Ka.z = parse_v3(noprefix) or_return
 
-		} else if starts_with(line, "Kd") {
+		} else if starts_with(line, "Kd ") {
 			mat.Kd.x, mat.Kd.y, mat.Kd.z = parse_v3(noprefix) or_return
 
-		} else if starts_with(line, "Ks") {
+		} else if starts_with(line, "Ks ") {
 			mat.Ks.x, mat.Ks.y, mat.Ks.z = parse_v3(noprefix) or_return
 
-		} else if starts_with(line, "Ke") {
+		} else if starts_with(line, "Ke ") {
 			mat.Ke.x, mat.Ke.y, mat.Ke.z = parse_v3(noprefix) or_return
 
 			//
 			// Special enum
 			//
 
-		} else if starts_with(line, "illum") {
+		} else if starts_with(line, "illum ") {
 			mat.illum = parse_illum(noprefix)
 
 			//
 			// path strings
 			//
 
-		} else if starts_with(line, "map_Ka") {
+		} else if starts_with(line, "map_Ka ") {
 			mat.strings[.map_Ka] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "diffuse") {
+		} else if starts_with(line, "diffuse ") {
 			mat.strings[.diffuse] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Kd") {
+		} else if starts_with(line, "map_Kd ") {
 			mat.strings[.map_Kd] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "specular") {
+		} else if starts_with(line, "specular ") {
 			mat.strings[.specular] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Ks") {
+		} else if starts_with(line, "map_Ks ") {
 			mat.strings[.map_Ks] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "emissive") {
+		} else if starts_with(line, "emissive ") {
 			mat.strings[.emissive] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Ke") {
+		} else if starts_with(line, "map_Ke ") {
 			mat.strings[.map_Ke] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "ambient") {
+		} else if starts_with(line, "ambient ") {
 			mat.strings[.ambient] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Ka") {
+		} else if starts_with(line, "map_Ka ") {
 			mat.strings[.map_Ka] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "dissolve") {
+		} else if starts_with(line, "dissolve ") {
 			mat.strings[.dissolve] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "alpha") {
+		} else if starts_with(line, "alpha ") {
 			mat.strings[.alpha] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_d") {
+		} else if starts_with(line, "map_d ") {
 			mat.strings[.map_d] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "normal") {
+		} else if starts_with(line, "normal ") {
 			mat.strings[.normal] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "bump") {
+		} else if starts_with(line, "bump ") {
 			mat.strings[.bump] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_bump") {
+		} else if starts_with(line, "map_bump ") {
 			mat.strings[.map_bump] = mtl_new_string(m, noprefix)
 
-		} else if starts_with(line, "map_Bump") {
+		} else if starts_with(line, "map_Bump ") {
 			mat.strings[.map_Bump] = mtl_new_string(m, noprefix)
 		}
+
 
 	}
 

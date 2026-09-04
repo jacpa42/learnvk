@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:math"
 import "core:math/bits"
 import "core:math/linalg"
-import "core:math/rand"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -347,26 +346,23 @@ engine_make_framedata :: proc(
 		camera_position   = engine.camera.pos,
 		light_position    = {0, 0, 100, 0},
 		light_color       = [4]f32{0x50, 0x60, 0x70, 0xff} / 0xff,
-		ambient_light     = 0.05,
+		ambient_light     = 0.1,
 		flags             = engine.shader_flags,
 	}
 
 	add_draw_cmd :: proc(
-		draw_cmd_list: []vk.DrawIndexedIndirectCommand,
-		draw_cmd_index: ^u32,
+		cmd: ^vk.DrawIndexedIndirectCommand,
 		instances: IndexRange,
 		index_start: u32,
 		index_count: u32,
 		vertex_offset: i32,
 	) {
-		defer draw_cmd_index^ += 1
+		cmd.firstInstance = instances.start
+		cmd.instanceCount = instances.count
 
-		draw_cmd_list[draw_cmd_index^].firstInstance = instances.start
-		draw_cmd_list[draw_cmd_index^].instanceCount = instances.count
-
-		draw_cmd_list[draw_cmd_index^].firstIndex = index_start
-		draw_cmd_list[draw_cmd_index^].indexCount = index_count
-		draw_cmd_list[draw_cmd_index^].vertexOffset = vertex_offset
+		cmd.firstIndex = index_start
+		cmd.indexCount = index_count
+		cmd.vertexOffset = vertex_offset
 	}
 
 	add_instance_material :: proc(material: Material, textures: ^ShaderInstanceTextures) {
@@ -390,10 +386,10 @@ engine_make_framedata :: proc(
 
 		model_from_vertex: matrix[4, 4]f32 = 1
 		model_from_vertex *= imodel_from_vertex
-		model_from_vertex *= linalg.matrix4_rotate_f32((pos.y + t) / 10 * math.PI, {pos.x, 1, 1})
-		model_from_vertex *= linalg.matrix4_rotate_f32((pos.x + t) / 10 * math.PI, {pos.y, 1, 1})
+		// model_from_vertex *= linalg.matrix4_rotate_f32((pos.y + t) / 10 * math.PI, {pos.x, 1, 1})
+		// model_from_vertex *= linalg.matrix4_rotate_f32((pos.x + t) / 10 * math.PI, {pos.y, 1, 1})
 
-		normal_matrix := linalg.transpose(linalg.inverse(model_from_vertex))
+		normal_matrix := linalg.transpose(linalg.inverse(world_from_model * model_from_vertex))
 
 		transform^ = ShaderInstanceTransforms {
 			world_from_model  = world_from_model,
@@ -409,57 +405,32 @@ engine_make_framedata :: proc(
 	//
 	t := f32(glfw.GetTime())
 
-	space_size: [3]i32 = {5, 5, 5}
-
-	state := rand.Xoshiro256_Random_State{{1, 2, 3, 4}}
-	context.random_generator = rand.xoshiro256_random_generator(&state)
-
-	seen := make(map[[3]i32]struct{})
-	defer delete(seen)
-
 	num_instances: u32
-	for mesh in engine.mesh_data {
+	loc: [3]i32 = 0
 
-		first_instance := num_instances
+	for mesh in engine.mesh_data {
+		defer num_instances += 1
+
 		defer add_draw_cmd(
-			frame_data.draw_commands[:],
-			&num_draw_commands,
-			instances = IndexRange{first_instance, num_instances - first_instance},
-			index_start = mesh.model_data.index_start,
-			index_count = mesh.model_data.index_count,
-			vertex_offset = mesh.model_data.vertex_offset,
+			&frame_data.draw_commands[num_draw_commands],
+			instances = IndexRange{num_instances, 1},
+			index_start = mesh.index_start,
+			index_count = mesh.index_count,
+			vertex_offset = mesh.vertex_offset,
+		); num_draw_commands += 1
+
+		add_instance_transforms(
+			t,
+			{f32(loc.x), f32(loc.y), f32(loc.z)},
+			mesh.model_from_vertex,
+			&frame_data.instance_transforms[num_instances],
 		)
 
-		for _ in 0 ..< 10 {
+		add_instance_material(
+			engine.material_list[mesh.material_id],
+			&frame_data.instance_textures[num_instances],
+		)
 
-			loc: [3]i32; for {
-				if loc not_in seen {
-					seen[loc] = {}
-					break
-				}
-
-				loc = [3]i32 {
-					rand.int32_range(-space_size.x, space_size.x),
-					rand.int32_range(-space_size.y, space_size.y),
-					rand.int32_range(-space_size.z, space_size.z),
-				}
-			}
-
-			defer num_instances += 1
-
-			add_instance_transforms(
-				t,
-				{1.5 * f32(loc.x), 1.5 * f32(loc.y), 1.5 * f32(loc.z)},
-				mesh.model_from_vertex,
-				&frame_data.instance_transforms[num_instances],
-			)
-
-			add_instance_material(
-				engine.material_list[mesh.material_id],
-				&frame_data.instance_textures[num_instances],
-			)
-
-		}
 	}
 
 	return

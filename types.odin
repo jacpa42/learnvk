@@ -9,21 +9,21 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.viking_room
+CURRENT_MODEL := ModelTag.bunny
 LOAD_MODELS := bit_set[ModelTag] {
 	CURRENT_MODEL,
 	.viking_room,
 	.bunny,
-	.dragon,
-	.cacodemon,
-	.dark_lord,
-	// .sponza
+	// .cacodemon,
+	// .dragon,
+	// .dark_lord,
+	// .sponza,
 }
 PIPELINE :: Pipeline.shader
 
-MAX_DRAW_COMMANDS :: 256
+MAX_DRAW_COMMANDS :: 1024
 MAX_INSTANCES :: bits.U16_MAX
-ENGINE_ARENA_SIZE :: 16 * mem.Kilobyte
+ENGINE_ARENA_SIZE :: 1 * mem.Megabyte
 
 CULL_MODE :: vk.CullModeFlags{.BACK}
 MAX_MESH_NAME_LEN :: 32
@@ -60,6 +60,7 @@ OBJ_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.obj",
 	.sponza      = "assets/sponza/sponza.obj",
 	.cacodemon   = "assets/doom-eternal-cacodemon/cacodemon_LOD0.obj",
+	.dancersword = "assets/dancersword/dancer-swords.obj",
 }
 
 BOB_PATH := [ModelTag]string {
@@ -69,6 +70,7 @@ BOB_PATH := [ModelTag]string {
 	.viking_room = "assets/viking_room/viking_room.bob",
 	.sponza      = "assets/sponza/sponza.bob",
 	.cacodemon   = "assets/doom-eternal-cacodemon/cacodemon_LOD0.bob",
+	.dancersword = "assets/dancersword/dancer-swords.bob",
 }
 
 FLIP_TEXCOORDS_ON_LOAD := #partial [ModelTag]struct {
@@ -77,6 +79,7 @@ FLIP_TEXCOORDS_ON_LOAD := #partial [ModelTag]struct {
 } {
 	.viking_room = {flipx = false, flipy = true},
 	.cacodemon = {flipx = false, flipy = false},
+	.dark_lord = {flipx = false, flipy = true},
 }
 
 Model :: type_of(Engine{}.models[ModelTag(0)])
@@ -97,7 +100,6 @@ Texture :: struct #all_or_none {
 	// This is the index into the shader's texture list where this texture is
 	image: vk.Image,
 	view:  vk.ImageView,
-	tag:   MaterialType,
 }
 
 // odinfmt: disable
@@ -116,6 +118,7 @@ ModelTag :: enum {
 	dragon,
 	cacodemon,
 	dark_lord,
+	dancersword,
 	sponza,
 }
 
@@ -135,8 +138,8 @@ UniformFlag :: enum {
 FrameBufferData :: struct #align (16) {
 	uniforms:            ShaderUniforms,
 	draw_commands:       [MAX_DRAW_COMMANDS]vk.DrawIndexedIndirectCommand,
-	instance_transforms: [MAX_INSTANCES]ShaderInstanceTransforms,
 	instance_textures:   [MAX_INSTANCES]ShaderInstanceTextures,
+	instance_transforms: [MAX_INSTANCES]ShaderInstanceTransforms,
 }
 
 ShaderUniforms :: struct #all_or_none #align (16) {
@@ -155,15 +158,11 @@ IndexRange :: struct {
 }
 
 MeshInfo :: struct #all_or_none {
-	name:              string,
 	model_from_vertex: matrix[4, 4]f32,
-
-	// into the index buffer
-	model_data:        struct #all_or_none {
-		index_start:   u32,
-		index_count:   u32,
-		vertex_offset: i32,
-	},
+	name:              string,
+	index_start:       u32,
+	index_count:       u32,
+	vertex_offset:     i32,
 	// indexes into the material list
 	material_id:       MaterialID,
 }
@@ -181,19 +180,19 @@ Material :: struct #all_or_none {
 
 TextureList :: []Texture
 
-ShaderInstanceTransforms :: struct #all_or_none #align (16) {
+ShaderInstanceTransforms :: struct #all_or_none {
 	world_from_model:  matrix[4, 4]f32,
 	model_from_vertex: matrix[4, 4]f32,
 	normal_matrix:     matrix[4, 4]f32,
 }
 
-ShaderInstanceTextures :: struct #all_or_none #align (16) {
+ShaderInstanceTextures :: struct #all_or_none {
 	diffuse_id:  TextureID,
 	emissive_id: TextureID,
 	bump_id:     TextureID,
 	specular_id: TextureID,
 }
-
+#assert(size_of(ShaderInstanceTextures) == 4 * size_of(TextureID))
 
 DataBufferTag :: enum {
 	// model data buffers
@@ -283,8 +282,9 @@ Engine :: struct {
 	// Mesh data
 	//
 	data_buffer:              [DataBufferTag]vk.Buffer,
-	image_sampler:            [MaterialType]vk.Sampler,
-	mesh_data:                #soa[dynamic]MeshInfo,
+	image_sampler:            vk.Sampler,
+	model_mesh_ranges:        [ModelTag]IndexRange,
+	mesh_data:                [dynamic]MeshInfo,
 	material_list:            [dynamic]Material,
 	texture_list:             [dynamic]Texture,
 

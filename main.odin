@@ -1,6 +1,5 @@
 package learnvk
 
-import "core:fmt"
 import "core:mem"
 
 //
@@ -13,7 +12,6 @@ import "core:debug/trace"
 import "core:log"
 import "core:math/bits"
 import "core:slice"
-import "core:time"
 import "model"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -57,11 +55,7 @@ main :: proc() {
 	//
 	// Main loop
 	//
-	frame_watch: time.Stopwatch
 	for !glfw.WindowShouldClose(engine.window) {
-		time.stopwatch_reset(&frame_watch)
-		time.stopwatch_start(&frame_watch)
-
 		glfw.PollEvents()
 
 		if engine.stop_rendering {
@@ -72,15 +66,34 @@ main :: proc() {
 		frame(&engine)
 
 		free_all(context.temp_allocator)
-
-		elapsed := time.stopwatch_duration(frame_watch)
-		engine.delta_time = max(f32(elapsed) * 1e-9, MS_PER_FRAME_F32)
-		time.sleep(max(0, elapsed - MS_PER_FRAME))
 	}
 }
 
 engine_init :: proc(engine: ^Engine) {
 	result: vk.Result
+
+
+	//
+	// Initialize GLFW and create our window
+	//
+	{
+		glfw.SetErrorCallback(glfw_error_callback)
+		ensure(bool(glfw.Init()), "Failed to initialize GLFW")
+		ensure(bool(glfw.VulkanSupported()), "Vulkan is not supported")
+
+		glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
+		glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
+		engine.window = glfw.CreateWindow(1280, 678, APP_NAME, nil, nil)
+		assert(engine.window != nil, "Failed to create a GLFW window")
+
+		glfw.SetWindowUserPointer(engine.window, engine)
+		glfw.SetKeyCallback(engine.window, callback_key)
+		glfw.SetScrollCallback(engine.window, callback_scroll)
+		glfw.SetCursorPosCallback(engine.window, callback_cursor_move)
+		glfw.SetFramebufferSizeCallback(engine.window, callback_framebuffer_size)
+		glfw.SetWindowIconifyCallback(engine.window, callback_window_minimize)
+		glfw.SetInputMode(engine.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+	}
 
 	//
 	// initialize the engine arena for all our small allocations
@@ -132,29 +145,6 @@ engine_init :: proc(engine: ^Engine) {
 
 	assert(card(engine.model_loaded) > 0)
 	assert(CURRENT_MODEL in engine.model_loaded)
-
-
-	//
-	// Initialize GLFW and create our window
-	//
-	{
-		glfw.SetErrorCallback(glfw_error_callback)
-		assert(bool(glfw.Init()), "Failed to initialize GLFW")
-		assert(bool(glfw.VulkanSupported()))
-
-		glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-		glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
-		engine.window = glfw.CreateWindow(1280, 678, APP_NAME, nil, nil)
-		assert(engine.window != nil, "Failed to create a GLFW window")
-
-		glfw.SetWindowUserPointer(engine.window, engine)
-		glfw.SetKeyCallback(engine.window, callback_key)
-		glfw.SetScrollCallback(engine.window, callback_scroll)
-		glfw.SetCursorPosCallback(engine.window, callback_cursor_move)
-		glfw.SetFramebufferSizeCallback(engine.window, callback_framebuffer_size)
-		glfw.SetWindowIconifyCallback(engine.window, callback_window_minimize)
-		glfw.SetInputMode(engine.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
-	}
 
 	//
 	// Load all Vulkan global functions (ie without having an instance yet)
@@ -516,38 +506,36 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	assert(result == .SUCCESS)
 
 	//
-	// Create the samplers
+	// Create the sampler
 	//
-	for tag in MaterialType {
-
-		sampler_create_info := vk.SamplerCreateInfo {
-			sType                   = .SAMPLER_CREATE_INFO,
-			flags                   = {},
-			magFilter               = .LINEAR,
-			minFilter               = .LINEAR,
-			mipmapMode              = .LINEAR, // SamplerMipmapMode,
-			addressModeU            = .REPEAT, // SamplerAddressMode,
-			addressModeV            = .REPEAT, // SamplerAddressMode,
-			addressModeW            = .REPEAT, // SamplerAddressMode,
-			mipLodBias              = 0, // f32,
-			anisotropyEnable        = true, // b32,
-			maxAnisotropy           = physical_device_properties.limits.maxSamplerAnisotropy, // f32,
-			compareEnable           = false, // b32,
-			compareOp               = .ALWAYS, // CompareOp,
-			minLod                  = 0, // f32,
-			maxLod                  = 0, // f32,
-			borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
-			unnormalizedCoordinates = false, // b32,
-		}
-
-		result = vk.CreateSampler(
-			engine.device,
-			&sampler_create_info,
-			engine.alloc,
-			&engine.image_sampler[tag],
-		)
-		assert(result == .SUCCESS)
+	sampler_create_info := vk.SamplerCreateInfo {
+		sType                   = .SAMPLER_CREATE_INFO,
+		flags                   = {},
+		magFilter               = .LINEAR,
+		minFilter               = .LINEAR,
+		mipmapMode              = .LINEAR, // SamplerMipmapMode,
+		addressModeU            = .REPEAT, // SamplerAddressMode,
+		addressModeV            = .REPEAT, // SamplerAddressMode,
+		addressModeW            = .REPEAT, // SamplerAddressMode,
+		mipLodBias              = 0, // f32,
+		anisotropyEnable        = true, // b32,
+		maxAnisotropy           = physical_device_properties.limits.maxSamplerAnisotropy, // f32,
+		compareEnable           = false, // b32,
+		compareOp               = .ALWAYS, // CompareOp,
+		minLod                  = 0, // f32,
+		maxLod                  = 0, // f32,
+		borderColor             = .INT_OPAQUE_BLACK, // BorderColor,
+		unnormalizedCoordinates = false, // b32,
 	}
+
+	result = vk.CreateSampler(
+		engine.device,
+		&sampler_create_info,
+		engine.alloc,
+		&engine.image_sampler,
+	)
+	assert(result == .SUCCESS)
+
 
 	//
 	// Create the descriptor sets/set_layouts for all the models and the uniform
@@ -694,6 +682,11 @@ engine_init_textures :: proc(engine: ^Engine, texture_load_tasks: [dynamic]LoadT
 		req := get_memory_requirements_image(engine.device, FORMAT, USAGE, w, h)
 		refine_memory_requirement(&texture_arena_requirements, req)
 	}
+
+	//
+	// If we didn't need any texture space, just return
+	//
+	if texture_arena_requirements.size == 0 do return
 
 	engine.texture_arena, result = gpu_arena_init(
 		device = engine.device,
@@ -843,7 +836,6 @@ engine_init_model_buffers :: proc(engine: ^Engine) -> (result: vk.Result) {
 				upload_dest_offset + vk.DeviceSize(slice.size(data)),
 			)
 
-
 			queue_append_whole_buffer(
 				&engine.transfer_queue,
 				engine.device,
@@ -883,8 +875,6 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 	// this one is special its an array of textures
 	//
 	case .textures:
-		assert(len(engine.texture_list) > 0)
-
 		texture_num := u32(len(engine.texture_list))
 		pool_sizes[tag] = {layout.descriptorType, texture_num}
 		maxSets += texture_num
@@ -1003,7 +993,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 			assert(tex.image > 0 && tex.view > 0)
 
 			image_info[i] = vk.DescriptorImageInfo {
-				sampler     = engine.image_sampler[tex.tag],
+				sampler     = engine.image_sampler,
 				imageView   = tex.view,
 				imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 			}
@@ -1639,7 +1629,8 @@ engine_destroy :: proc(engine: ^Engine) {
 	gpu_arena_destroy(engine.device, engine.texture_arena, engine.alloc)
 
 	for buffer in engine.data_buffer do vk.DestroyBuffer(engine.device, buffer, engine.alloc)
-	for sampler in engine.image_sampler do vk.DestroySampler(engine.device, sampler, engine.alloc)
+
+	vk.DestroySampler(engine.device, engine.image_sampler, engine.alloc)
 
 	for texture in engine.texture_list {
 		vk.DestroyImageView(engine.device, texture.view, engine.alloc)
@@ -1675,9 +1666,7 @@ engine_destroy :: proc(engine: ^Engine) {
 	vk.DestroyPipelineLayout(engine.device, engine.pipeline_layout, engine.alloc)
 	vk.DestroyPipeline(engine.device, engine.render_pipeline, engine.alloc)
 	vk.DestroyShaderModule(engine.device, engine.pipeline_shader, engine.alloc)
-	for image_view in engine.swapchain_image_views {
-		vk.DestroyImageView(engine.device, image_view, engine.alloc)
-	}
+	for image_view in engine.swapchain_image_views do vk.DestroyImageView(engine.device, image_view, engine.alloc)
 	vk.DestroySwapchainKHR(engine.device, engine.swapchain, engine.alloc)
 	vk.DestroySurfaceKHR(engine.instance, engine.surface, engine.alloc)
 	vk.DestroyDevice(engine.device, engine.alloc)

@@ -124,10 +124,11 @@ bob_get_mesh_indices_index :: proc(bob: Bob, mesh_index: int) -> []u32 {
 	return bob_get_mesh_indices(bob, get_meshes(bob)[mesh_index])
 }
 obj_get_mesh_indices :: proc(obj: Obj, mesh: Mesh) -> []u32 {
-	return obj.indices[:]
+	return obj.indices[mesh.index_start:mesh.index_start + mesh.index_count]
 }
 bob_get_mesh_indices :: proc(bob: Bob, mesh: Mesh) -> []u32 {
-	return get_slice_data(bob.header.indices, bob.data)
+	all := get_slice_data(bob.header.indices, bob.data)
+	return all[mesh.index_start:mesh.index_start + mesh.index_count]
 }
 
 get_vertices :: proc {

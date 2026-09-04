@@ -189,13 +189,13 @@ bobctx_make :: proc(header: ^BobHeader, obj: ^Obj) -> (ctx: BobCreateContext) {
 	header.mtl_path = obj.mtl_path
 	header.mtl_path.start += header.strings.start
 
-	for &material in obj.materials[:] {
+	for &material in obj.materials {
 		for &mat in material.strings {
 			mat.start += header.strings.start
 		}
 	}
 
-	for &mesh in obj.meshes[:] {
+	for &mesh in obj.meshes {
 		mesh.material.start += header.strings.start
 		mesh.name.start += header.strings.start
 	}

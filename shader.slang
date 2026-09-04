@@ -2,14 +2,14 @@ struct Vertex {
     float3 pos;
     float3 normal;
     float2 texcoord;
-};
+}
 
 struct VertexOutput {
-    float4 pos : SV_Position;
-    float3 normal;
-    float3 light_dir;
-    float2 texcoord;
-    uint   instance_id;
+    float4           pos : SV_Position;
+    float3           normal;
+    float3           light_dir;
+    float2           texcoord;
+    InstanceTextures textures;
 }
 
 struct Uniforms {
@@ -19,7 +19,7 @@ struct Uniforms {
     float4   light_color;
     float4   camera_position;
     float    ambient_light;
-};
+}
 
 struct InstanceTransforms {
     float4x4 world_from_model;
@@ -49,7 +49,8 @@ VertexOutput vertex(
 ) {
     VertexOutput output;
 
-    InstanceTransforms itransforms = instance_transforms[start+instance_id];
+    InstanceTransforms itransforms = instance_transforms[start + instance_id];
+    InstanceTextures   itextures   = instance_textures[start + instance_id];
 
     float4 vertex        = float4(ivertex.pos, 1.0);
     float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
@@ -58,20 +59,18 @@ VertexOutput vertex(
 
     output.pos = vertex_screen;
 
-    output.normal      = normalize(mul(float3x3(itransforms.normal_matrix), ivertex.normal));
-    output.light_dir   = normalize(uniforms.light_position.xyz - vertex_world.xyz);
-    output.texcoord    = ivertex.texcoord;
-    output.instance_id = start+instance_id;
+    output.normal    = normalize(mul(float3x3(itransforms.normal_matrix), ivertex.normal));
+    output.light_dir = normalize(uniforms.light_position.xyz - vertex_world.xyz);
+    output.texcoord  = ivertex.texcoord;
+    output.textures  = itextures;
 
     return output;
 }
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    InstanceTextures itextures = instance_textures[input.instance_id];
-
     float4 col = uniforms.light_color * float4(
-        float3(max(dot(input.light_dir, input.normal), 0.1)),
+        float3(max(dot(input.light_dir, input.normal), 0.0)),
         1.0
     );
 
@@ -80,8 +79,8 @@ float4 fragment(VertexOutput input) : SV_TARGET {
     //
     // diffuse
     //
-    if (itextures.diffuse_id >= 0) {
-        col *= textures[itextures.diffuse_id].Sample(input.texcoord);
+    if (input.textures.diffuse_id >= 0) {
+        col *= textures[input.textures.diffuse_id].Sample(input.texcoord);
     }
 
     return col;

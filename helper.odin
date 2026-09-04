@@ -1,6 +1,7 @@
 package learnvk
 
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:math/bits"
@@ -8,7 +9,6 @@ import "core:math/linalg"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
-import "core:slice"
 import "core:strings"
 import "core:thread"
 import "model"
@@ -16,68 +16,63 @@ import "vendor:glfw"
 import stb_image "vendor:stb/image"
 import vk "vendor:vulkan"
 
-engine_new_texture :: proc(
-	engine: ^Engine,
-	material_id: MaterialID,
-	tag: MaterialType,
-) -> (
-	texture_id: TextureID,
-) {
-	texture_id = TextureID(len(engine.texture_list))
+engine_new_texture :: proc(engine: ^Engine, material_id: MaterialID) -> (texture_id: TextureID) {
+	_, err := append_nothing(&engine.texture_list)
+	ensure(err == .None)
 
-	switch tag {
-	case .diffuse:
-		engine.material_list[material_id].diffuse_id = texture_id
-	case .emissive:
-		engine.material_list[material_id].emissive_id = texture_id
-	case .bump:
-		engine.material_list[material_id].bump_id = texture_id
-	case .specular:
-		engine.material_list[material_id].specular_id = texture_id
-	}
-
-	// we allocate the image after we load the texture data
-	append(&engine.texture_list, Texture{image = 0, view = 0, tag = tag})
-
+	texture_id = TextureID(len(engine.texture_list) - 1)
 	return
 }
 
 engine_new_material :: proc(engine: ^Engine) -> (material_id: MaterialID) {
-	material_id = MaterialID(len(engine.material_list))
-	append(&engine.material_list, NO_MATERIAL)
+	_, err := append(&engine.material_list, NO_MATERIAL)
+	ensure(err == .None)
 
+	material_id = MaterialID(len(engine.material_list) - 1)
 	return
 }
 
 // NOTE: Name is copied, not cloned
 engine_new_mesh :: proc(
 	engine: ^Engine,
+	model_tag: ModelTag,
 	name: string,
 	model_from_vertex: matrix[4, 4]f32,
 	#any_int index_count: u32,
 	#any_int vertex_offset: i32,
 	material_id: MaterialID,
+) -> (
+	mesh_id: int,
 ) {
 	index_start: u32
 	if len(engine.mesh_data) > 0 {
-		last_appended := engine.mesh_data.model_data[len(engine.mesh_data) - 1]
+		last_appended := engine.mesh_data[len(engine.mesh_data) - 1]
 		index_start = last_appended.index_start + last_appended.index_count
 	}
-	append(
+
+	_, err := append(
 		&engine.mesh_data,
 		MeshInfo {
 			name = name,
-			// into the index buffer
 			model_from_vertex = model_from_vertex,
-			model_data = {
-				index_start = index_start,
-				index_count = index_count,
-				vertex_offset = vertex_offset,
-			},
-			// indexes into the material list
+			index_start = index_start,
+			index_count = index_count,
+			vertex_offset = vertex_offset,
 			material_id = material_id,
 		},
 	)
+	ensure(err == .None)
+
+	mesh_id = len(engine.mesh_data) - 1
+
+	if engine.model_mesh_ranges[model_tag] == {} {
+		engine.model_mesh_ranges[model_tag].start = u32(mesh_id)
+		engine.model_mesh_ranges[model_tag].count = 1
+	} else {
+		engine.model_mesh_ranges[model_tag].count += 1
+	}
+
+	return
 }
 
 @(require_results)
@@ -572,7 +567,7 @@ engine_define_load_tasks :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskDa
 	//
 	// Initialize our mesh metadata arrays
 	//
-	engine.mesh_data = make(#soa[dynamic]MeshInfo, length = 0, capacity = 64)
+	engine.mesh_data = make([dynamic]MeshInfo, len = 0, cap = 512)
 	engine.material_list = make([dynamic]Material, len = 0, cap = 128)
 	engine.texture_list = make([dynamic]Texture, len = 0, cap = 512)
 
@@ -592,6 +587,101 @@ engine_define_load_tasks :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskDa
 
 	// Append a stub material
 	stub_material := engine_new_material(engine)
+	STUB_MATERIAL :: 0
+	ensure(stub_material == STUB_MATERIAL)
+
+	new_mesh :: proc(
+		engine: ^Engine,
+		model_tag: ModelTag,
+		mesh: model.Mesh,
+		model_from_vertex: matrix[4, 4]f32,
+		vertex_offset: i32,
+		texture_id_map: ^map[TexturePath]TextureID,
+		material_id_map: ^map[MaterialName]MaterialID,
+		tasks: ^[dynamic]LoadTaskData,
+	) {
+		this_model := engine.models[model_tag]
+
+		mesh_name := model.get_mesh_name(this_model, mesh)
+		mesh_indices := model.get_mesh_indices(this_model, mesh)
+		mesh_data_index := engine_new_mesh(
+			engine,
+			model_tag,
+			strings.clone(mesh_name),
+			model_from_vertex,
+			index_count = len(mesh_indices),
+			vertex_offset = vertex_offset,
+			material_id = -1,
+		)
+
+		//
+		// Find the material for this mesh
+		//
+		mtl, mesh_has_material := model.find_material_by_mesh(this_model, mesh)
+		if !mesh_has_material {
+			log.warnf("{}.{} has no material", model_tag, model.get_mesh_name(this_model, mesh))
+			engine.mesh_data[mesh_data_index].material_id = STUB_MATERIAL
+		}
+
+		mtl_name := model.get_material_string(this_model, mtl, .name)
+		material_id, material_already_loaded := material_id_map[mtl_name]
+
+		if !material_already_loaded {
+			// Create a new material slot.
+			material_id = engine_new_material(engine)
+			material_id_map[mtl_name] = material_id
+			engine.mesh_data[mesh_data_index].material_id = material_id
+		} else {
+			// We have already loaded this material. Just set the mesh
+			// material_id and continue the outer loop
+			engine.mesh_data[mesh_data_index].material_id = material_id
+			return
+		}
+
+		//
+		// We haven't loaded this material yet, create the texture load tasks
+		//
+		for tt in MaterialType {
+
+			path, channels, format := get_texture_details(this_model, mtl, tt) or_continue
+			texture_id, texture_already_loaded := texture_id_map[path]
+
+			if !texture_already_loaded {
+				texture_id = engine_new_texture(engine, material_id)
+				texture_id_map[path] = texture_id
+			}
+			fmt.eprintfln("m({}) t({}) tt({})->{}", material_id, texture_id, tt, path)
+
+			switch tt {
+			case .diffuse:
+				engine.material_list[material_id].diffuse_id = texture_id
+			case .emissive:
+				engine.material_list[material_id].emissive_id = texture_id
+			case .bump:
+				engine.material_list[material_id].bump_id = texture_id
+			case .specular:
+				engine.material_list[material_id].specular_id = texture_id
+			}
+
+			if !texture_already_loaded {
+				append(
+					tasks,
+					LoadTaskData {
+						input = {
+							material_id      = material_id,
+							texture_id       = texture_id,
+
+							//
+							texture_cpath    = path,
+							desired_channels = channels,
+							format           = format,
+						},
+					},
+				)
+			}
+
+		}
+	}
 
 	//
 	// Add all the meshes to the mesh_data soa array. We append them with
@@ -599,109 +689,45 @@ engine_define_load_tasks :: proc(engine: ^Engine) -> (tasks: [dynamic]LoadTaskDa
 	// if we don't define it later
 	//
 
-	// FIX: For some reason, multi model meshes do not render correctly :(
-	// I think it something to do with the `vertex_offset` variable
+	vertex_offset: i32
+	for model_tag in engine.model_loaded {
 
-	vertex_offset := 0
-	for tag in engine.model_loaded {
+		defer vertex_offset += i32(len(model.get_vertices(engine.models[model_tag])))
 
-		defer vertex_offset += len(model.get_vertices(engine.models[tag]))
-
-		dim := engine.models[tag].header.dim
-		corner := engine.models[tag].header.corner
+		dim := engine.models[model_tag].header.dim
+		corner := engine.models[model_tag].header.corner
 		model_from_vertex := linalg.matrix4_scale_f32(1.0 / max(dim.x, dim.y, dim.z, 0.001))
 		model_from_vertex *= linalg.matrix4_translate_f32({-corner.x, -corner.y, -corner.z})
 
-		for mesh in model.get_meshes(engine.models[tag]) {
-			mesh_name := model.get_mesh_name(engine.models[tag], mesh)
-			mesh_indices := model.get_mesh_indices(engine.models[tag], mesh)
-
-			engine_new_mesh(
-				engine,
-				strings.clone(mesh_name),
-				model_from_vertex,
-				len(mesh_indices),
-				vertex_offset,
-				-1,
+		for mesh in model.get_meshes(engine.models[model_tag]) {
+			new_mesh(
+				engine = engine,
+				model_tag = model_tag,
+				mesh = mesh,
+				model_from_vertex = model_from_vertex,
+				vertex_offset = vertex_offset,
+				texture_id_map = &texture_id_map,
+				material_id_map = &material_id_map,
+				tasks = &tasks,
 			)
 		}
 	}
 
-	mesh_data_index: int
-	for model_tag in engine.model_loaded do for mesh in model.get_meshes(engine.models[model_tag]) {
-		defer mesh_data_index += 1
+	for material, id in engine.material_list {
 
-		//
-		// Find the material for this mesh
-		//
-		mtl, mesh_has_material := model.find_material_by_mesh(engine.models[model_tag], mesh)
-		if !mesh_has_material {
-			log.warnf("{}.{} has no material", model_tag, model.get_mesh_name(engine.models[model_tag], mesh))
-			engine.mesh_data[mesh_data_index].material_id = stub_material
-			continue
-		}
-
-		mtl_name := model.get_material_string(engine.models[model_tag], mtl, .name)
-		material_id, material_already_loaded := material_id_map[mtl_name]
-
-		mesh_material_ptr: ^Material
-
-		defer log.infof("{}.{} -> MaterialID({})", model_tag, model.get_mesh_name(engine.models[model_tag], mesh), material_id)
-
-		if !material_already_loaded {
-			// Create a new material slot.
-			material_id = engine_new_material(engine)
-			material_id_map[mtl_name] = material_id
-			engine.mesh_data[mesh_data_index].material_id = material_id
-			mesh_material_ptr = &engine.material_list[material_id]
-		} else {
-			// We have already loaded this material. Just set the mesh
-			// material_id and continue the outer loop
-			engine.mesh_data[mesh_data_index].material_id = material_id
-			continue
-		}
-
-		assert(mesh_material_ptr != nil)
-
-		//
-		// We haven't loaded this material yet, create the texture load tasks
-		//
-		for tt in MaterialType {
-			path, channels, format := get_texture_details(engine.models[model_tag], mtl, tt) or_continue
-
-			texture_id, texture_already_defined := texture_id_map[path]
-			if texture_already_defined {
-				switch tt {
-				case .diffuse:
-					mesh_material_ptr.diffuse_id = texture_id
-				case .emissive:
-					mesh_material_ptr.emissive_id = texture_id
-				case .bump:
-					mesh_material_ptr.bump_id = texture_id
-				case .specular:
-					mesh_material_ptr.specular_id = texture_id
-				}
-			} else {
-
-				texture_id = engine_new_texture(engine, material_id, tt)
-				texture_id_map[path] = texture_id
-
-				append(&tasks, LoadTaskData {
-					input = {
-						material_id      = material_id,
-						texture_id       = texture_id,
-
-						//
-						texture_cpath    = path,
-						desired_channels = channels,
-						format           = format,
-					},
-				})
-
-				log.infof("Material({}).{} = {} ({})", material_id, tt, texture_id, path)
+		mname: string = "kjkflsfkjlsfkj"
+		for material_name, mid in material_id_map {
+			if mid == MaterialID(id) {
+				mname = material_name; break
 			}
 		}
+
+		log.infof("Material({}) {}: %#v", id, mname, material)
 	}
+
+	fmt.eprintfln("%#v", material_id_map)
+	fmt.eprintfln("%#v", texture_id_map)
+	fmt.eprintfln("%#v", engine.model_mesh_ranges)
 
 	return
 }
