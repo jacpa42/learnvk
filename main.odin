@@ -49,6 +49,9 @@ main :: proc() {
 	engine_init(&engine)
 	defer engine_destroy(&engine)
 
+	imgui_init(&engine)
+	defer imgui_destroy(&engine)
+
 	MS_PER_FRAME :: 16_666_666
 	MS_PER_FRAME_F32 :: MS_PER_FRAME * 1e-9
 

@@ -386,8 +386,15 @@ int main(int, char**)
 
     // Setup scaling
     ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(main_scale);        // Bake a fixed style scale. (until we have a solution for dynamic style scaling, changing this requires resetting Style + calling this again)
-    style.FontScaleDpi = main_scale;        // Set initial font scale. (in docking branch: using io.ConfigDpiScaleFonts=true automatically overrides this for every window depending on the current monitor)
+
+    // Bake a fixed style scale. (until we have a solution for dynamic style
+    // scaling, changing this requires resetting Style + calling this again)
+    style.ScaleAllSizes(main_scale);
+
+    // Set initial font scale. (in docking branch: using io.ConfigDpiScaleFonts=true
+    // automatically overrides this for every window depending on the current
+    // monitor)
+    style.FontScaleDpi = main_scale;
 
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForVulkan(window, true);
@@ -435,11 +442,15 @@ int main(int, char**)
     // Main loop
     while (!glfwWindowShouldClose(window))
     {
-        // Poll and handle events (inputs, window resize, etc.)
-        // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-        // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
-        // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
-        // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+        // Poll and handle events (inputs, window resize, etc.) You can read the
+        // io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear
+        // imgui wants to use your inputs. - When io.WantCaptureMouse is true,
+        // do not dispatch mouse input data to your main application, or
+        // clear/overwrite your copy of the mouse data. - When
+        // io.WantCaptureKeyboard is true, do not dispatch keyboard input data
+        // to your main application, or clear/overwrite your copy of the
+        // keyboard data. Generally you may always pass all inputs to dear
+        // imgui, and hide them from your application based on those two flags.
         glfwPollEvents();
 
         // Resize swap chain?

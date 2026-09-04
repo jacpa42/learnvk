@@ -7,6 +7,8 @@ import "core:math/linalg"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
+import im "imgui"
+
 frame :: proc(engine: ^Engine) {
 	result: vk.Result
 
@@ -55,7 +57,7 @@ frame :: proc(engine: ^Engine) {
 	ensure(result == .SUCCESS)
 
 	//
-	// Fill the command buffer
+	// Fill the command buffer with our main scene render calls
 	//
 	engine_fill_cmd_buffer(engine)
 
@@ -63,6 +65,7 @@ frame :: proc(engine: ^Engine) {
 	// Submit the commands to the gpu
 	//
 	engine_submit_and_present_cmd_buffer(engine)
+
 }
 
 engine_fill_cmd_buffer :: proc(engine: ^Engine) {
@@ -218,6 +221,14 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 		drawCount = num_draw_commands,
 		stride = size_of(vk.DrawIndexedIndirectCommand),
 	)
+
+
+	//
+	// Render imgui overlay
+	//
+	imgui_begin(engine)
+	im.ShowDemoWindow()
+	imgui_end(engine, commandBuffer)
 }
 
 engine_submit_and_present_cmd_buffer :: proc(engine: ^Engine) {
