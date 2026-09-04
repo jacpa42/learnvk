@@ -12,6 +12,8 @@ import im "imgui"
 frame :: proc(engine: ^Engine) {
 	result: vk.Result
 
+	imgui_begin()
+
 	//
 	// Handle frame buffer resizing early
 	//
@@ -226,7 +228,6 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 	// Render imgui overlay
 	//
-	imgui_begin(engine)
 	im.ShowDemoWindow()
 	imgui_end(engine, commandBuffer)
 }

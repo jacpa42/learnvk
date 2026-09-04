@@ -9,15 +9,16 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 APP_NAME: cstring = "learnvk"
-CURRENT_MODEL := ModelTag.bunny
+CURRENT_MODEL := ModelTag.sponza
 LOAD_MODELS := bit_set[ModelTag] {
 	CURRENT_MODEL,
-	.viking_room,
-	.bunny,
-	// .cacodemon,
+	// .viking_room,
+	// .bunny,
 	// .dragon,
+	// .cacodemon,
 	// .dark_lord,
-	// .sponza,
+	// .dancersword,
+	.sponza,
 }
 PIPELINE :: Pipeline.shader
 

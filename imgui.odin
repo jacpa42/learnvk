@@ -91,7 +91,7 @@ imgui_destroy :: proc(engine: ^Engine) {
 	im.Shutdown()
 }
 
-imgui_begin :: proc(engine: ^Engine) {
+imgui_begin :: proc() {
 	imglfw.NewFrame()
 	imvk.NewFrame()
 	im.NewFrame()
