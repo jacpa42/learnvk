@@ -172,7 +172,11 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	//
 
 	engine_handle_input(engine)
-	num_draw_commands := engine_make_framedata(engine, engine.frame_data.ptr)
+	num_draw_commands := engine_make_framedata(
+		engine,
+		&engine.push_constants,
+		engine.frame_data.ptr,
+	)
 
 	//
 	// Run the graphics pipeline
@@ -180,6 +184,19 @@ engine_fill_cmd_buffer :: proc(engine: ^Engine) {
 	vk.CmdBindPipeline(commandBuffer, .GRAPHICS, engine.render_pipeline)
 	vk.CmdSetViewport(commandBuffer, 0, 1, &engine.viewport)
 	vk.CmdSetScissor(commandBuffer, 0, 1, &engine.scissor)
+
+
+	//
+	// Setup the push constants
+	//
+	vk.CmdPushConstants(
+		commandBuffer = commandBuffer,
+		layout = engine.pipeline_layout,
+		stageFlags = {.VERTEX, .FRAGMENT},
+		offset = 0,
+		size = size_of(ShaderPushConsants),
+		pValues = &engine.push_constants,
+	)
 
 	//
 	// Bind vertex buffers
@@ -322,6 +339,7 @@ engine_handle_input :: proc(engine: ^Engine) {
 @(require_results)
 engine_make_framedata :: proc(
 	engine: ^Engine,
+	push_constants: ^ShaderPushConsants,
 	frame_data: ^FrameBufferData,
 ) -> (
 	num_draw_commands: u32,
@@ -351,15 +369,13 @@ engine_make_framedata :: proc(
 			up = engine.camera.up,
 		)
 
-	frame_data.uniforms = {
+	push_constants^ = {
 		screen_from_world = screen_from_world,
-
 		//
 		camera_position   = engine.camera.pos,
 		light_position    = {0, 0, 100, 0},
 		light_color       = [4]f32{0x50, 0x60, 0x70, 0xff} / 0xff,
 		ambient_light     = 0.1,
-		flags             = engine.shader_flags,
 	}
 
 	add_draw_cmd :: proc(

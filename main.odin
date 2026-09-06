@@ -547,6 +547,15 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 	engine_init_descriptor_set_layouts(engine)
 
 	//
+	// Define our push constant range
+	//
+	push_constant_range := vk.PushConstantRange {
+		stageFlags = {.VERTEX, .FRAGMENT},
+		offset     = 0,
+		size       = size_of(ShaderPushConsants),
+	}
+
+	//
 	// Define and create the pipeline layout
 	//
 	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
@@ -557,8 +566,8 @@ engine_init_graphics_pipeline :: proc(engine: ^Engine) {
 		pSetLayouts            = &engine.set_layout,
 
 		// push constants
-		pushConstantRangeCount = 0,
-		pPushConstantRanges    = nil,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &push_constant_range,
 	}
 
 	result = vk.CreatePipelineLayout(
@@ -862,9 +871,8 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 
 	outer: for layout, tag in SHADER_PIPELINE_SET_LAYOUTS do switch tag {
 
-	case .uniforms:
-		pool_sizes[tag] = {layout.descriptorType, 1}
-		maxSets += 1
+	case .constants:
+	// this is a push constant. ignore
 
 	case .instance_transforms:
 		pool_sizes[tag] = {layout.descriptorType, 1}
@@ -885,6 +893,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 		// WARN: I update the global variable here. I would define it in the
 		// shader parser, but the count is dynamic so I don't.
 		SHADER_PIPELINE_SET_LAYOUTS[.textures].descriptorCount = texture_num
+
 	}
 
 	//
@@ -1018,16 +1027,7 @@ engine_init_descriptor_set_layouts :: proc(engine: ^Engine) {
 
 	#assert(PIPELINE == .shader)
 	for binding, binding_tag in SHADER_PIPELINE_SET_LAYOUTS do switch binding_tag {
-
-	case .uniforms:
-		assert(binding.descriptorCount == 1)
-
-		buffer_info := vk.DescriptorBufferInfo {
-			buffer = engine.frame_data.buffer,
-			offset = mapped_buffer_get_offset(engine.frame_data, "uniforms"),
-			range  = size_of(engine.frame_data.ptr.uniforms),
-		}
-		configure_single_buffer(engine.device, &buffer_info, engine.descriptor_set, binding.binding, binding.descriptorType)
+	case .constants:
 
 	case .instance_transforms:
 		assert(binding.descriptorCount == 1)
@@ -1613,9 +1613,7 @@ engine_recreate_swapchain :: proc(engine: ^Engine) {
 	vk.DestroySwapchainKHR(engine.device, engine.swapchain, engine.alloc)
 	engine.swapchain = 0
 
-	for image_view in engine.swapchain_image_views {
-		vk.DestroyImageView(engine.device, image_view, engine.alloc)
-	}
+	for view in engine.swapchain_image_views do vk.DestroyImageView(engine.device, view, engine.alloc)
 	clear(&engine.swapchain_image_views)
 
 	vk.FreeMemory(engine.device, engine.depth_image_memory, engine.alloc)

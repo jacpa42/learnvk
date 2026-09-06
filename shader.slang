@@ -12,7 +12,7 @@ struct VertexOutput {
     InstanceTextures textures;
 }
 
-struct Uniforms {
+struct PushConsants {
     float4x4 screen_from_world;
 
     float4   light_position;
@@ -35,7 +35,8 @@ struct InstanceTextures {
     int specular_id;
 }
 
-ConstantBuffer<Uniforms> uniforms;
+[vk::push_constant]
+PushConsants constants;
 
 StructuredBuffer<InstanceTransforms> instance_transforms;
 StructuredBuffer<InstanceTextures>   instance_textures;
@@ -55,12 +56,12 @@ VertexOutput vertex(
     float4 vertex        = float4(ivertex.pos, 1.0);
     float4 vertex_model  = mul(itransforms.model_from_vertex, vertex);
     float4 vertex_world  = mul(itransforms.world_from_model,  vertex_model);
-    float4 vertex_screen = mul(uniforms.screen_from_world,    vertex_world);
+    float4 vertex_screen = mul(constants.screen_from_world,    vertex_world);
 
     output.pos = vertex_screen;
 
     output.normal    = normalize(mul(float3x3(itransforms.normal_matrix), ivertex.normal));
-    output.light_dir = normalize(uniforms.light_position.xyz - vertex_world.xyz);
+    output.light_dir = normalize(constants.light_position.xyz - vertex_world.xyz);
     output.texcoord  = ivertex.texcoord;
     output.textures  = itextures;
 
@@ -69,12 +70,12 @@ VertexOutput vertex(
 
 [shader("fragment")]
 float4 fragment(VertexOutput input) : SV_TARGET {
-    float4 col = uniforms.light_color * float4(
+    float4 col = constants.light_color * float4(
         float3(max(dot(input.light_dir, input.normal), 0.0)),
         1.0
     );
 
-    col += uniforms.ambient_light * uniforms.light_color;
+    col += constants.ambient_light * constants.light_color;
 
     //
     // diffuse

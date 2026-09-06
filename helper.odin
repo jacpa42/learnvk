@@ -296,7 +296,6 @@ glfw_error_callback :: proc "c" (error: i32, description: cstring) {
 callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: i32) {
 	engine := cast(^Engine)glfw.GetWindowUserPointer(window)
 
-    ctrl    := (mods & glfw.MOD_CONTROL) > 0
     down    := action != glfw.RELEASE
     pressed := action == glfw.PRESS
 
@@ -329,41 +328,6 @@ callback_key :: proc "c" (window: glfw.WindowHandle, key, scancode, action, mods
 	if key == glfw.KEY_J && down  do engine.actions += {.down}
 	if key == glfw.KEY_J && !down do engine.actions -= {.down}
 
-    //
-    // Flag toggling
-    //
-
-    if key == glfw.KEY_D && ctrl && pressed {
-        if .enable_diffuse in engine.shader_flags {
-            engine.shader_flags -= {.enable_diffuse}
-        } else {
-            engine.shader_flags += {.enable_diffuse}
-        }
-    }
-
-    if key == glfw.KEY_E && ctrl && pressed {
-        if .enable_emissive in engine.shader_flags {
-            engine.shader_flags -= {.enable_emissive}
-        } else {
-            engine.shader_flags += {.enable_emissive}
-        }
-    }
-
-    if key == glfw.KEY_H && ctrl && pressed {
-        if .enable_bump in engine.shader_flags {
-            engine.shader_flags -= {.enable_bump}
-        } else {
-            engine.shader_flags += {.enable_bump}
-        }
-    }
-
-    if key == glfw.KEY_S && ctrl && pressed {
-        if .enable_specular in engine.shader_flags {
-            engine.shader_flags -= {.enable_specular}
-        } else {
-            engine.shader_flags += {.enable_specular}
-        }
-    }
 }
 // odinfmt: enable
 

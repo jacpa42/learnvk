@@ -129,21 +129,13 @@ ImageViewTag :: enum {
 	depth_buffer,
 }
 
-UniformFlag :: enum {
-	enable_diffuse,
-	enable_emissive,
-	enable_bump,
-	enable_specular,
-}
-
 FrameBufferData :: struct #align (16) {
-	uniforms:            ShaderUniforms,
 	draw_commands:       [MAX_DRAW_COMMANDS]vk.DrawIndexedIndirectCommand,
 	instance_textures:   [MAX_INSTANCES]ShaderInstanceTextures,
 	instance_transforms: [MAX_INSTANCES]ShaderInstanceTransforms,
 }
 
-ShaderUniforms :: struct #all_or_none #align (16) {
+ShaderPushConsants :: struct #all_or_none #align (16) {
 	screen_from_world: matrix[4, 4]f32,
 
 	//
@@ -151,7 +143,6 @@ ShaderUniforms :: struct #all_or_none #align (16) {
 	light_color:       [4]f32,
 	camera_position:   [4]f32,
 	ambient_light:     f32,
-	flags:             bit_set[UniformFlag;u32],
 }
 
 IndexRange :: struct {
@@ -238,7 +229,6 @@ Engine :: struct {
 	model_rotation:           f32,
 	delta_time:               f32,
 	camera:                   Camera,
-	shader_flags:             bit_set[UniformFlag;u32],
 
 	//
 	// Physical and Logical device
@@ -271,6 +261,7 @@ Engine :: struct {
 	// All our gpu memory is here
 	//
 	transfer_queue:           GpuTransferQueue,
+	push_constants:           ShaderPushConsants,
 	frame_data:               MappedBuffer(FrameBufferData),
 	model_arena:              GpuArena,
 	texture_arena:            GpuArena,
